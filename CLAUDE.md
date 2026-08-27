@@ -19,7 +19,7 @@ There is no separate lint step; compilation (`./mvnw compile`) is the gate.
 
 ## State of the project
 
-A working blog/social API: auth (register, OTP verify, login, refresh, logout, password reset), profiles, posts with images, feed, comments, reactions, friendships, and notifications. Seven modules — `auth`, `user`, `post`, `comment`, `reaction`, `friendship`, `notification` — plus `common`, `config`, `security`, `integration/{storage,email}`, and `messaging`.
+A working blog/social API: auth (register, OTP verify, login, refresh, logout, password reset), profiles, posts with images, feed, comments, reactions, friendships, and notifications. Seven modules — `auth`, `user`, `post`, `comment`, `reaction`, `friendship`, `notification` — plus `common`, `config`, `security`, `integration/{storage,email}`, `messaging`, and `scheduler`.
 
 Runtime dependencies: PostgreSQL, Redis, RabbitMQ. The app will not start without a datasource; Redis is required for OTP, token revocation, reaction counts and rate limiting; RabbitMQ carries OTP delivery, image processing, feed fan-out and notifications.
 
