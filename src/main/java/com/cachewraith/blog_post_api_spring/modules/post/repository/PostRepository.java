@@ -1,6 +1,7 @@
 package com.cachewraith.blog_post_api_spring.modules.post.repository;
 
 import com.cachewraith.blog_post_api_spring.modules.post.entity.Post;
+import com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -16,7 +17,21 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface PostRepository extends JpaRepository<Post, UUID> {
 
-    Page<Post> findByAuthorIdOrderByCreatedAtDesc(UUID authorId, Pageable pageable);
+    /**
+     * One author's timeline, filtered to the visibility values the viewer is entitled to. The
+     * filter is part of the query rather than applied to the results so that page totals describe
+     * what the viewer actually receives, and so a FRIENDS/PRIVATE post cannot leak (OWASP A01).
+     */
+    @Query(
+            """
+            select p from Post p
+            where p.authorId = :authorId and p.visibility in :visibilities
+            order by p.createdAt desc
+            """)
+    Page<Post> findByAuthorVisibleTo(
+            @Param("authorId") UUID authorId,
+            @Param("visibilities") Collection<Visibility> visibilities,
+            Pageable pageable);
 
     List<Post> findAllByIdIn(Collection<UUID> ids);
 

@@ -7,6 +7,8 @@ import com.cachewraith.blog_post_api_spring.modules.friendship.service.Friendshi
 import com.cachewraith.blog_post_api_spring.modules.post.entity.Post;
 import com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility;
 import com.cachewraith.blog_post_api_spring.modules.post.repository.PostRepository;
+import java.util.EnumSet;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -60,6 +62,24 @@ public class PostVisibilityService {
             case FRIENDS -> viewerId != null && friendshipService.areFriends(post.getAuthorId(), viewerId);
             case PRIVATE -> false;
         };
+    }
+
+    /**
+     * The visibility values a viewer is allowed to see on one author's timeline.
+     *
+     * <p>The set form of {@link #isVisible}, for filtering inside a query rather than after it:
+     * paging first and discarding invisible rows afterwards would report page totals that count
+     * posts the viewer never receives.
+     */
+    @Transactional(readOnly = true)
+    public Set<Visibility> visibleVisibilitiesFor(UUID authorId, UUID viewerId) {
+        if (viewerId != null && viewerId.equals(authorId)) {
+            return EnumSet.allOf(Visibility.class);
+        }
+        if (viewerId != null && friendshipService.areFriends(authorId, viewerId)) {
+            return EnumSet.of(Visibility.PUBLIC, Visibility.FRIENDS);
+        }
+        return EnumSet.of(Visibility.PUBLIC);
     }
 
     /** Owner-only gate for mutations. */

@@ -84,6 +84,7 @@ Where the build departs from the written spec, it is deliberate and recorded her
 - **There is no `REACTION` notification type.** Raising one would require `ReactionService` to resolve a target's owner through `PostService`, reintroducing exactly the cycle that `ReactionSyncConsumer` exists to avoid.
 - **`image.process` downscales the stored original in place** rather than writing a second derivative file. Rewriting the object at its existing URL means no schema column and no row update — every `PostImage` that referenced the image still does. Only JPEG and PNG are re-encoded: GIF may be animated and WebP has no ImageIO writer in the JDK, so re-encoding either would flatten or corrupt it, and both are left exactly as uploaded.
 - **`otp.send` delivers through `EmailService`.** `EmailConfig` selects `SmtpEmailService` when `spring.mail.host` is set and `LoggingEmailService` otherwise, resolved through an `ObjectProvider<JavaMailSender>` in one bean method rather than a pair of `@ConditionalOnMissingBean` beans, whose ordering in user configuration is easy to get subtly wrong. **Never set `spring.mail.host` to an empty value** — Boot creates a `JavaMailSender` whenever the property is present at all, which would select SMTP with nowhere to connect. The dev profile sets `app.email.log-codes=true` so codes appear at DEBUG and registration is completable locally; that flag must stay false anywhere real.
+- **`GET /users/{id}/posts` filters visibility inside the query**, via `PostVisibilityService.visibleVisibilitiesFor`. Paging first and discarding invisible rows afterwards would report page totals that count posts the viewer never receives.
 - **Someone else's notification is reported as 404, not 403.** A 403 would confirm that the id exists, turning the endpoint into an enumeration oracle.
 - **Order matters in `SecurityConfig`.** `authorizeHttpRequests` matches in declaration order and a single `*` matches one whole path segment, so `/users/me` is listed *before* the public `/users/*` rule. Reversing them silently exposes the own-profile endpoint anonymously.
 
@@ -127,6 +128,11 @@ Modules scaffolded here: `post`, `user`, `comment`, `reaction`, `friendship`, `n
 (full layout) and `auth` (controller + service + dto + entity + repository — it has no
 entity of its own beyond the OTP audit trail and reaches user data through `UserService`).
 All at `v1`.
+
+Two modules carry more than one controller, which is how a route that hangs off another
+resource's path is handled: the module that owns the resource being returned keeps the
+controller, and the path decides the class. `post` has `PostController` (`/posts`),
+`FeedController` (`/feed`) and `UserPostsController` (`/users/{id}/posts`).
 
 Rules
 - Controllers, DTOs and mappers are versioned (`v1`, `v2`); services, repositories and
