@@ -21,9 +21,9 @@ There is no separate lint step; compilation (`./mvnw compile`) is the gate.
 
 A working blog/social API: auth (register, OTP verify, login, refresh, logout, password reset), profiles, posts with images, feed, comments, reactions, friendships, and notifications. Seven modules — `auth`, `user`, `post`, `comment`, `reaction`, `friendship`, `notification` — plus `common`, `config`, `security`, `integration/{storage,email}`, and `messaging`.
 
-Runtime dependencies: PostgreSQL, Redis, RabbitMQ. The app will not start without a datasource; Redis is required for OTP, token revocation, and reaction counts.
+Runtime dependencies: PostgreSQL, Redis, RabbitMQ. The app will not start without a datasource; Redis is required for OTP, token revocation, and reaction counts; RabbitMQ carries OTP delivery, image processing, feed fan-out and notifications.
 
-**Flyway owns the schema in every profile** and `ddl-auto` is `validate` everywhere — see *Database migrations* below.
+**Flyway owns the schema in every profile** and `ddl-auto` is `validate` everywhere — see *Database migrations* below. Every queue consumer is now implemented; none is a stub.
 
 ## Toolchain and version constraints
 
@@ -80,7 +80,7 @@ Where the build departs from the written spec, it is deliberate and recorded her
 - **`notification.dispatch` persists a `Notification` row** and the module exposes `/notifications`. Recording happens in the consumer rather than inline in the feature services, so a notification failure cannot roll back the comment, repost or friend request that raised it. A type this build does not recognise is dropped with a warning rather than retried — redelivery would fail identically forever and only fill the dead-letter queue.
 - **Self-notification is suppressed once, in `NotificationServiceImpl.record`**, not at each publisher. Commenting on your own post is not news, and the alternative is the same guard copied into every call site.
 - **There is no `REACTION` notification type.** Raising one would require `ReactionService` to resolve a target's owner through `PostService`, reintroducing exactly the cycle that `ReactionSyncConsumer` exists to avoid.
-- **`image.process` is a stub.** Uploads are stored and `PostImage` rows written synchronously, so posts are never left without images; the queue stage only exists to add optimised derivatives.
+- **`image.process` downscales the stored original in place** rather than writing a second derivative file. Rewriting the object at its existing URL means no schema column and no row update — every `PostImage` that referenced the image still does. Only JPEG and PNG are re-encoded: GIF may be animated and WebP has no ImageIO writer in the JDK, so re-encoding either would flatten or corrupt it, and both are left exactly as uploaded.
 - **`otp.send` delivers through `EmailService`.** `EmailConfig` selects `SmtpEmailService` when `spring.mail.host` is set and `LoggingEmailService` otherwise, resolved through an `ObjectProvider<JavaMailSender>` in one bean method rather than a pair of `@ConditionalOnMissingBean` beans, whose ordering in user configuration is easy to get subtly wrong. **Never set `spring.mail.host` to an empty value** — Boot creates a `JavaMailSender` whenever the property is present at all, which would select SMTP with nowhere to connect. The dev profile sets `app.email.log-codes=true` so codes appear at DEBUG and registration is completable locally; that flag must stay false anywhere real.
 - **Someone else's notification is reported as 404, not 403.** A 403 would confirm that the id exists, turning the endpoint into an enumeration oracle.
 - **Order matters in `SecurityConfig`.** `authorizeHttpRequests` matches in declaration order and a single `*` matches one whole path segment, so `/users/me` is listed *before* the public `/users/*` rule. Reversing them silently exposes the own-profile endpoint anonymously.

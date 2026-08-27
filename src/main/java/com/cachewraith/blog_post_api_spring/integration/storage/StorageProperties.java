@@ -22,4 +22,10 @@ public class StorageProperties {
             Set.of("image/jpeg", "image/png", "image/webp", "image/gif");
 
     private List<String> allowedExtensions = List.of("jpg", "jpeg", "png", "webp", "gif");
+
+    /**
+     * Longest edge kept by the image.process stage. Anything larger is downscaled in place; smaller
+     * images are left untouched rather than re-encoded for no gain.
+     */
+    private int maxDimensionPixels = 1600;
 }
