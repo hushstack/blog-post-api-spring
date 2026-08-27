@@ -21,7 +21,7 @@ There is no separate lint step; compilation (`./mvnw compile`) is the gate.
 
 A working blog/social API: auth (register, OTP verify, login, refresh, logout, password reset), profiles, posts with images, feed, comments, reactions, friendships, and notifications. Seven modules — `auth`, `user`, `post`, `comment`, `reaction`, `friendship`, `notification` — plus `common`, `config`, `security`, `integration/{storage,email}`, and `messaging`.
 
-Runtime dependencies: PostgreSQL, Redis, RabbitMQ. The app will not start without a datasource; Redis is required for OTP, token revocation, and reaction counts; RabbitMQ carries OTP delivery, image processing, feed fan-out and notifications.
+Runtime dependencies: PostgreSQL, Redis, RabbitMQ. The app will not start without a datasource; Redis is required for OTP, token revocation, reaction counts and rate limiting; RabbitMQ carries OTP delivery, image processing, feed fan-out and notifications.
 
 **Flyway owns the schema in every profile** and `ddl-auto` is `validate` everywhere — see *Database migrations* below. Every queue consumer is now implemented; none is a stub.
 
@@ -63,6 +63,8 @@ Flyway owns the schema. `ddl-auto` is `validate` in **every** profile, set once 
 
 `SecurityConfig` defines the chain: stateless, CSRF off (no cookies or sessions to protect), JWT filter ahead of `UsernamePasswordAuthenticationFilter`. **A new endpoint is authenticated unless the chain names it**, which is the right default — add a matcher only when anonymous access is genuinely intended, and read the ordering note under *Implementation notes* first.
 
+Rate limiting is opt-in per handler via `@RateLimited` on a controller method, enforced by `RateLimitInterceptor` (registered for all paths in `WebConfig`) against a fixed-window counter in Redis. Authenticated callers are bucketed by user id, anonymous ones by `getRemoteAddr()` — deliberately not `X-Forwarded-For`, which a client can set freely; behind a proxy set `server.forward-headers-strategy` so the container resolves the real address first. It fails **open** when Redis is unreachable, on the grounds that a Redis outage should not lock everyone out of login. The auth endpoints carry limits; a handler without the annotation is unlimited.
+
 Actuator exposes `/actuator/health` only, with `show-details=never`. Widening `management.endpoints.web.exposure.include` puts the widened set behind the security chain, so authorize it deliberately. Swagger UI is on at `/swagger-ui.html` in dev and switched off entirely in prod.
 
 ## Package naming
@@ -103,6 +105,7 @@ Every new file goes at its address below, under the name below; do not invent si
 | `security.jwt` | `JwtProvider`, `JwtFilter`, `JwtProperties` |
 | `security.userdetails` | `CustomUserDetailsService` |
 | `security.handler` | `AccessDeniedHandlerImpl`, `AuthEntryPointImpl` |
+| `security.ratelimit` | `RateLimitService`, `RateLimitInterceptor` |
 | `integration.<provider>` | third-party clients — `payment`, `email`, `storage` |
 | `scheduler` | one class per job — `CleanupScheduler` |
 

@@ -17,6 +17,7 @@ public final class AppConstants {
     public static final String KEY_REFRESH = "refresh:";
     public static final String KEY_FEED = "feed:";
     public static final String KEY_POST_REACTIONS = "post:reactions:";
+    public static final String KEY_RATE_LIMIT = "ratelimit:";
 
     public static final int OTP_MAX_ATTEMPTS = 5;
     public static final int OTP_LENGTH = 6;
