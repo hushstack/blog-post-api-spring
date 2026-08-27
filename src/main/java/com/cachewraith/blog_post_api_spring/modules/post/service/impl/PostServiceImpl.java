@@ -3,6 +3,7 @@ package com.cachewraith.blog_post_api_spring.modules.post.service.impl;
 import com.cachewraith.blog_post_api_spring.common.exception.BusinessException;
 import com.cachewraith.blog_post_api_spring.common.exception.ErrorCode;
 import com.cachewraith.blog_post_api_spring.common.response.CursorPageResponse;
+import com.cachewraith.blog_post_api_spring.common.response.PageResponse;
 import com.cachewraith.blog_post_api_spring.config.ShareProperties;
 import com.cachewraith.blog_post_api_spring.integration.storage.StorageService;
 import com.cachewraith.blog_post_api_spring.messaging.event.FeedFanoutEvent;
@@ -39,7 +40,10 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -196,6 +200,20 @@ public class PostServiceImpl implements PostService {
                         : null;
 
         return CursorPageResponse.of(content, nextCursor);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<PostResponse> listByAuthor(UUID authorId, UUID viewerId, Pageable pageable) {
+        // An unknown author is a 404 rather than an empty page, so the caller can tell the two apart.
+        userService.requireUser(authorId);
+
+        Set<Visibility> visibilities = visibility.visibleVisibilitiesFor(authorId, viewerId);
+        Page<Post> page = postRepository.findByAuthorVisibleTo(authorId, visibilities, pageable);
+
+        // Mapped through the batch assembler, then rewrapped so the page metadata survives.
+        List<PostResponse> content = toResponses(page.getContent(), viewerId);
+        return PageResponse.from(new PageImpl<>(content, pageable, page.getTotalElements()));
     }
 
     @Override

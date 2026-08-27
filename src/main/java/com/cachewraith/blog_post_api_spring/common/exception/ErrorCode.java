@@ -25,6 +25,8 @@ public enum ErrorCode {
     TOKEN_EXPIRED("Token has expired", HttpStatus.UNAUTHORIZED),
     TOKEN_REVOKED("Token has been revoked", HttpStatus.UNAUTHORIZED),
 
+    RATE_LIMIT_EXCEEDED("Too many requests, slow down", HttpStatus.TOO_MANY_REQUESTS),
+
     ACCESS_DENIED("You are not allowed to perform this action", HttpStatus.FORBIDDEN),
     POST_NOT_VISIBLE("Post is not visible to you", HttpStatus.FORBIDDEN),
 

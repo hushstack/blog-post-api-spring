@@ -1,6 +1,7 @@
 package com.cachewraith.blog_post_api_spring.modules.post.service;
 
 import com.cachewraith.blog_post_api_spring.common.response.CursorPageResponse;
+import com.cachewraith.blog_post_api_spring.common.response.PageResponse;
 import com.cachewraith.blog_post_api_spring.modules.post.dto.v1.request.CreatePostRequest;
 import com.cachewraith.blog_post_api_spring.modules.post.dto.v1.request.RepostRequest;
 import com.cachewraith.blog_post_api_spring.modules.post.dto.v1.request.UpdatePostRequest;
@@ -9,6 +10,7 @@ import com.cachewraith.blog_post_api_spring.modules.post.dto.v1.response.ShareLi
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.Pageable;
 import org.springframework.web.multipart.MultipartFile;
 
 public interface PostService {
@@ -26,6 +28,9 @@ public interface PostService {
     ShareLinkResponse shareLink(UUID postId, UUID viewerId);
 
     CursorPageResponse<PostResponse> feed(UUID viewerId, Instant cursor, int size);
+
+    /** One author's timeline, filtered to what {@code viewerId} may see. Anonymous viewers pass null. */
+    PageResponse<PostResponse> listByAuthor(UUID authorId, UUID viewerId, Pageable pageable);
 
     /**
      * Adjusts the denormalised comment counter. Exposed so the comment module can keep it in step

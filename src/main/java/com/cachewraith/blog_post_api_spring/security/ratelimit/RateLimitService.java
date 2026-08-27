@@ -1,0 +1,44 @@
+package com.cachewraith.blog_post_api_spring.security.ratelimit;
+
+import com.cachewraith.blog_post_api_spring.common.constant.AppConstants;
+import java.time.Duration;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+
+/**
+ * Fixed-window request counter in Redis.
+ *
+ * <p>Redis rather than an in-process map because the limit must hold across every instance — a
+ * per-JVM counter multiplies the real limit by the number of replicas, which is no limit at all.
+ *
+ * <p>A fixed window admits up to 2x the limit across a window boundary. That is accepted here: the
+ * goal is to make brute force impractical, not to meter billing, and a sliding-window log would
+ * cost a sorted set per caller for a precision nothing needs.
+ */
+@Service
+@RequiredArgsConstructor
+public class RateLimitService {
+
+    private final StringRedisTemplate redis;
+
+    /**
+     * Counts one request against {@code bucket} and reports whether it is still within the limit.
+     *
+     * <p>The TTL is set only when the counter is created. Refreshing it on every hit would turn the
+     * window into a sliding one that a steady stream of requests could keep alive forever.
+     */
+    public boolean tryConsume(String bucket, int limit, Duration window) {
+        String key = AppConstants.KEY_RATE_LIMIT + bucket;
+        Long count = redis.opsForValue().increment(key);
+        if (count == null) {
+            // Redis is unreachable. Fail open rather than locking every user out of login, and let
+            // the connection error surface in the logs (OWASP A10).
+            return true;
+        }
+        if (count == 1L) {
+            redis.expire(key, window);
+        }
+        return count <= limit;
+    }
+}

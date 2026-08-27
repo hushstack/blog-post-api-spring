@@ -1,5 +1,6 @@
 package com.cachewraith.blog_post_api_spring.modules.auth.controller.v1;
 
+import com.cachewraith.blog_post_api_spring.common.annotation.RateLimited;
 import com.cachewraith.blog_post_api_spring.common.constant.ApiVersions;
 import com.cachewraith.blog_post_api_spring.common.response.ApiResponse;
 import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.request.ForgotPasswordRequest;
@@ -32,6 +33,7 @@ public class AuthController {
     private final AuthService authService;
 
     @PostMapping("/register")
+    @RateLimited(limit = 5, windowSeconds = 3600)
     @ResponseStatus(HttpStatus.CREATED)
     @Operation(summary = "Register and receive a verification code")
     public ApiResponse<RegisterResponse> register(@Valid @RequestBody RegisterRequest request) {
@@ -44,23 +46,28 @@ public class AuthController {
      * email there is no way to scope the attempt counter to one account (OWASP A07, A09).
      */
     @PostMapping("/verify-otp")
+    @RateLimited(limit = 10, windowSeconds = 600)
     @Operation(summary = "Verify a registration code and receive tokens")
     public ApiResponse<TokenPairResponse> verifyOtp(@Valid @RequestBody VerifyOtpRequest request) {
         return ApiResponse.of(authService.verifyOtp(request));
     }
 
     @PostMapping("/login")
+    @RateLimited(limit = 10, windowSeconds = 300)
     @Operation(summary = "Exchange credentials for a token pair")
     public ApiResponse<TokenPairResponse> login(@Valid @RequestBody LoginRequest request) {
         return ApiResponse.of(authService.login(request));
     }
 
     @PostMapping("/refresh")
+    @RateLimited(limit = 30, windowSeconds = 60)
     @Operation(summary = "Rotate a refresh token")
     public ApiResponse<TokenPairResponse> refresh(@Valid @RequestBody RefreshRequest request) {
         return ApiResponse.of(authService.refresh(request));
     }
 
+    // Not rate limited: logout needs a valid token to do anything, and throttling it would
+    // leave a user unable to revoke a token they believe is compromised.
     @PostMapping("/logout")
     @Operation(summary = "Revoke the presented access token")
     public ApiResponse<Void> logout(HttpServletRequest request) {
@@ -72,6 +79,7 @@ public class AuthController {
     }
 
     @PostMapping("/forgot-password")
+    @RateLimited(limit = 3, windowSeconds = 3600)
     @Operation(summary = "Request a password reset")
     public ApiResponse<Void> forgotPassword(@Valid @RequestBody ForgotPasswordRequest request) {
         authService.forgotPassword(request);
@@ -79,6 +87,7 @@ public class AuthController {
     }
 
     @PostMapping("/reset-password")
+    @RateLimited(limit = 5, windowSeconds = 3600)
     @Operation(summary = "Reset a password with a valid token")
     public ApiResponse<Void> resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
         authService.resetPassword(request);
