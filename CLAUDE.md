@@ -19,7 +19,7 @@ There is no separate lint step; compilation (`./mvnw compile`) is the gate.
 
 ## State of the project
 
-A working blog/social API: auth (register, OTP verify, login, refresh, logout, password reset), profiles, posts with images, feed, comments, reactions, and friendships. Six modules — `auth`, `user`, `post`, `comment`, `reaction`, `friendship` — plus `common`, `config`, `security`, `integration/storage`, and `messaging`.
+A working blog/social API: auth (register, OTP verify, login, refresh, logout, password reset), profiles, posts with images, feed, comments, reactions, friendships, and notifications. Seven modules — `auth`, `user`, `post`, `comment`, `reaction`, `friendship`, `notification` — plus `common`, `config`, `security`, `integration/storage`, and `messaging`.
 
 Runtime dependencies: PostgreSQL, Redis, RabbitMQ. The app will not start without a datasource; Redis is required for OTP, token revocation, and reaction counts.
 
@@ -46,7 +46,7 @@ Environment variables in play: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `REDIS_HO
 
 Flyway owns the schema. `ddl-auto` is `validate` in **every** profile, set once in `application.properties`; the dev profile deliberately no longer sets `update`.
 
-- Migrations live in `src/main/resources/db/migration` as `V<n>__<snake_case>.sql`. `V1__baseline_schema.sql` is the whole schema as of the first release.
+- Migrations live in `src/main/resources/db/migration` as `V<n>__<snake_case>.sql`. `V1__baseline_schema.sql` is the whole schema as of the first release; `V2__notifications.sql` adds the notifications table.
 - **A schema change starts with a new migration**, never with an entity edit alone. Hibernate validates against what Flyway built and refuses to start on a mismatch, which is the point — `update` and Flyway both writing DDL is how a database drifts away from its migrations unnoticed.
 - The column types in a migration must match what Hibernate expects, not merely something compatible. The reliable way to write one for a new entity is to let Hibernate emit its own DDL first and copy from it:
 
@@ -59,7 +59,7 @@ Flyway owns the schema. `ddl-auto` is `validate` in **every** profile, set once 
 
   `Instant` maps to `timestamp(6) with time zone`, and `@GeneratedValue(strategy = UUID)` means ids are generated in the application — no database default and no uuid extension.
 - **A database built by the old `ddl-auto=update` cannot be migrated in place.** `V1` creates every table from scratch and will fail against one that already has them. Drop and recreate the dev database rather than reaching for `spring.flyway.baseline-on-migrate`, which would mark an unknown schema as already at V1 and skip the real definition.
-- The entities carry no JPA relationships (plain `UUID` columns), so foreign keys exist only in the migrations. They cascade on delete where ownership is unambiguous; `posts.original_post_id` is `on delete set null` so a repost outlives the post it quoted. `reactions.target_id` is polymorphic and therefore carries no foreign key at all.
+- The entities carry no JPA relationships (plain `UUID` columns), so foreign keys exist only in the migrations. They cascade on delete where ownership is unambiguous; `posts.original_post_id` is `on delete set null` so a repost outlives the post it quoted. `reactions.target_id` and `notifications.target_id` are polymorphic and therefore carry no foreign key at all.
 
 `SecurityConfig` defines the chain: stateless, CSRF off (no cookies or sessions to protect), JWT filter ahead of `UsernamePasswordAuthenticationFilter`. **A new endpoint is authenticated unless the chain names it**, which is the right default — add a matcher only when anonymous access is genuinely intended, and read the ordering note under *Implementation notes* first.
 
@@ -77,8 +77,11 @@ Where the build departs from the written spec, it is deliberate and recorded her
 - **Refresh tokens live in a per-user Redis hash** at `refresh:{userId}` (field = `jti`), not as separate `refresh:{userId}:{jti}` keys. Separate keys force a `KEYS refresh:{userId}:*` scan to end all sessions at once, which blocks the whole Redis instance. Revoke-one is `HDEL`, revoke-all is `DEL`.
 - **`feed.fanout` invalidates each friend's cached feed rather than pushing post ids into it.** A pushed id can outlive the viewer's right to see it (unfriending, a visibility change); invalidation re-runs the visibility-filtered query on the next read.
 - **The feed query is split into `findFeedFirstPage` / `findFeedAfter`.** Postgres cannot infer the type of a parameter compared only against NULL, so a single `:cursor is null or ...` query fails with `could not determine data type`.
-- **`notification.dispatch` logs but persists nothing.** Spec §3 calls for a notification row, but §4 defines no Notification entity and §5 no endpoints to read one. Adding the entity, repository and endpoints is a self-contained follow-up.
+- **`notification.dispatch` persists a `Notification` row** and the module exposes `/notifications`. Recording happens in the consumer rather than inline in the feature services, so a notification failure cannot roll back the comment, repost or friend request that raised it. A type this build does not recognise is dropped with a warning rather than retried — redelivery would fail identically forever and only fill the dead-letter queue.
+- **Self-notification is suppressed once, in `NotificationServiceImpl.record`**, not at each publisher. Commenting on your own post is not news, and the alternative is the same guard copied into every call site.
+- **There is no `REACTION` notification type.** Raising one would require `ReactionService` to resolve a target's owner through `PostService`, reintroducing exactly the cycle that `ReactionSyncConsumer` exists to avoid.
 - **`image.process` and `otp.send` consumers are stubs.** Uploads are stored and `PostImage` rows written synchronously, so posts are never left without images; the queue stage only exists to add optimised derivatives. `otp.send` needs a real mail/SMS provider wired in — until then no code is ever delivered.
+- **Someone else's notification is reported as 404, not 403.** A 403 would confirm that the id exists, turning the endpoint into an enumeration oracle.
 - **Order matters in `SecurityConfig`.** `authorizeHttpRequests` matches in declaration order and a single `*` matches one whole path segment, so `/users/me` is listed *before* the public `/users/*` rule. Reversing them silently exposes the own-profile endpoint anonymously.
 
 <!-- spring-structure:start -->
@@ -116,9 +119,10 @@ Inside `modules.<feature>`, for feature `User`:
 | `mapper.v<N>` | `UserMapper` |
 | `validator` | `UserValidator` |
 
-Modules scaffolded here: `post`, `user`, `comment` (full layout) and `auth`
-(controller + service + dto + validator only — it has no entity or repository of its own
-and reaches user data through `UserService`). All at `v1`.
+Modules scaffolded here: `post`, `user`, `comment`, `reaction`, `friendship`, `notification`
+(full layout) and `auth` (controller + service + dto + entity + repository — it has no
+entity of its own beyond the OTP audit trail and reaches user data through `UserService`).
+All at `v1`.
 
 Rules
 - Controllers, DTOs and mappers are versioned (`v1`, `v2`); services, repositories and
