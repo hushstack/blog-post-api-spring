@@ -31,3 +31,9 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Local secrets ###
+# Real credentials live here and must never be committed. .env.example is the tracked template.
+.env
+.env.*
+!.env.example

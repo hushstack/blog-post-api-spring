@@ -1,6 +1,7 @@
 package com.cachewraith.blog_post_api_spring.config;
 
 import com.cachewraith.blog_post_api_spring.common.constant.AppConstants;
+import com.cachewraith.blog_post_api_spring.integration.storage.StorageProperties;
 import com.cachewraith.blog_post_api_spring.security.handler.AccessDeniedHandlerImpl;
 import com.cachewraith.blog_post_api_spring.security.handler.AuthEntryPointImpl;
 import com.cachewraith.blog_post_api_spring.security.jwt.JwtAuthFilter;
@@ -38,6 +39,7 @@ public class SecurityConfig {
     private final AccessDeniedHandlerImpl accessDeniedHandler;
     private final CustomUserDetailsService userDetailsService;
     private final CorsProperties corsProperties;
+    private final StorageProperties storageProperties;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -82,10 +84,27 @@ public class SecurityConfig {
                                                 "/swagger-ui.html",
                                                 "/v3/api-docs/**")
                                         .permitAll()
+                                        // Locally stored avatars and post images. Public by
+                                        // design — exactly what the R2 bucket serves in the other
+                                        // driver — and read-only: GET alone, and only while the
+                                        // local driver is the one writing them.
+                                        .requestMatchers(HttpMethod.GET, localFilesPattern())
+                                        .permitAll()
                                         .anyRequest()
                                         .authenticated())
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
                 .build();
+    }
+
+    /**
+     * The served path in local mode, or a pattern that matches nothing in R2 mode. Derived from
+     * {@code app.storage.public-base-url} through the same accessor {@code WebConfig} uses, so the
+     * permit rule and the resource handler always name the same path.
+     */
+    private String localFilesPattern() {
+        return storageProperties.getDriver() == StorageProperties.Driver.LOCAL
+                ? storageProperties.localFilesPattern()
+                : "/__no_local_storage__/**";
     }
 
     @Bean

@@ -32,7 +32,25 @@
 		<mapstruct.version>1.6.3</mapstruct.version>
 		<lombok-mapstruct-binding.version>0.2.0</lombok-mapstruct-binding.version>
 		<springdoc.version>3.1.0</springdoc.version>
+		<aws-sdk.version>2.54.10</aws-sdk.version>
 	</properties>
+	<dependencyManagement>
+		<dependencies>
+			<!--
+			  Cloudflare R2 speaks the S3 API, so the AWS SDK is the client. Boot does not manage the
+			  AWS SDK, hence the imported BOM: it keeps s3 and every transitive aws artifact on one
+			  version, which is the usual source of NoSuchMethodError in this SDK.
+			-->
+			<dependency>
+				<groupId>software.amazon.awssdk</groupId>
+				<artifactId>bom</artifactId>
+				<version>${aws-sdk.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -101,6 +119,21 @@
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
 			<version>${springdoc.version}</version>
+		</dependency>
+
+		<!--
+		  Object storage. Only the synchronous S3Client is used, so the async Netty transport is
+		  excluded: it is a large dependency that nothing here calls.
+		-->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>s3</artifactId>
+			<exclusions>
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>netty-nio-client</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 
 		<dependency>

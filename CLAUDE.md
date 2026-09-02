@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-All commands use the Maven wrapper from the project root.
+All commands use the Maven wrapper from the project root. To run the whole stack —
+app, Postgres, Redis, RabbitMQ — without a local Java or database install, use Docker
+instead: `docker compose up -d`. See `README-DOCKER.md`.
 
 ```bash
 ./mvnw spring-boot:run              # run the app (DevTools restart is active)
@@ -40,7 +42,7 @@ Runtime dependencies: PostgreSQL, Redis, RabbitMQ. The app will not start withou
 
 Config is split three ways: `application.properties` holds shared settings and reads secrets from the environment; `application-dev.properties` supplies localhost defaults; `application-prod.properties` supplies nothing and requires every value from the environment. Profile files override the base, which is why `app.jwt.secret` can have no default in the base file and still boot in dev.
 
-Environment variables in play: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`, `RABBITMQ_*`, `JWT_SECRET`, `CORS_ALLOWED_ORIGINS`, `STORAGE_PATH`, `STORAGE_PUBLIC_URL`, `SHARE_BASE_URL`, `MAIL_HOST`/`MAIL_PORT`/`MAIL_USERNAME`/`MAIL_PASSWORD`/`MAIL_FROM`. `JWT_SECRET` must be at least 32 bytes — `JwtProvider` refuses to start otherwise, deliberately. The `MAIL_*` set is required in prod and absent in dev, which is what selects the no-delivery mail fallback locally.
+Environment variables in play: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`, `RABBITMQ_*`, `JWT_SECRET`, `CORS_ALLOWED_ORIGINS`, `FILESYSTEM_DISK`, `STORAGE_PATH`, `STORAGE_PUBLIC_URL`, `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_BUCKET`/`R2_REGION`/`R2_ENDPOINT`/`R2_URL`/`R2_USE_PATH_STYLE_ENDPOINT`, `SHARE_BASE_URL`, `MAIL_HOST`/`MAIL_PORT`/`MAIL_USERNAME`/`MAIL_PASSWORD`/`MAIL_FROM`. `JWT_SECRET` must be at least 32 bytes — `JwtProvider` refuses to start otherwise, deliberately. The `MAIL_*` set is required in prod and absent in dev, which is what selects the no-delivery mail fallback locally.
 
 ## Database migrations
 
@@ -65,7 +67,81 @@ Flyway owns the schema. `ddl-auto` is `validate` in **every** profile, set once 
 
 Rate limiting is opt-in per handler via `@RateLimited` on a controller method, enforced by `RateLimitInterceptor` (registered for all paths in `WebConfig`) against a fixed-window counter in Redis. Authenticated callers are bucketed by user id, anonymous ones by `getRemoteAddr()` — deliberately not `X-Forwarded-For`, which a client can set freely; behind a proxy set `server.forward-headers-strategy` so the container resolves the real address first. It fails **open** when Redis is unreachable, on the grounds that a Redis outage should not lock everyone out of login. The auth endpoints carry limits; a handler without the annotation is unlimited.
 
-Actuator exposes `/actuator/health` only, with `show-details=never`. Widening `management.endpoints.web.exposure.include` puts the widened set behind the security chain, so authorize it deliberately. Swagger UI is on at `/swagger-ui.html` in dev and switched off entirely in prod.
+Actuator exposes `/actuator/health` only, with `show-details=never`. Widening `management.endpoints.web.exposure.include` puts the widened set behind the security chain, so authorize it deliberately.
+
+## Swagger UI
+
+On at `/swagger-ui.html` in dev, and switched off entirely in prod — `springdoc.api-docs.enabled` and `springdoc.swagger-ui.enabled` are both false there, so none of the UI settings in the base file reach a deployed environment. `SecurityConfig` permits `/swagger-ui/**`, `/swagger-ui.html` and `/v3/api-docs/**`.
+
+- **The error envelope is attached in `OpenApiConfig`, not by annotating handlers.** An `OperationCustomizer` sets `ApiErrorResponse` as the OpenAPI `default` response on every operation, and an `OpenApiCustomizer` registers the schema, which no handler signature mentions. `default` means "any status not listed", which is exactly what `GlobalExceptionHandler` guarantees — enumerating 400/401/404 per handler would be a per-endpoint guess, and a guess goes stale.
+- **`springdoc.swagger-ui.persist-authorization=true`** keeps the bearer token across page reloads, in browser localStorage. A real place for a token to sit, and the reason it is scoped to the profiles where the UI exists at all.
+- **`info.description` carries the token walkthrough** — where the OTP surfaces (emailed when `spring.mail.host` is set, printed at DEBUG when it is not) and what to paste where. Keep it in step with `EmailConfig`, and **keep it short**: Swagger UI renders the description above the Servers row, so a long one pushes the **Authorize** button — the only place a token can be entered — down the page, where testers do not find it.
+- **`POST /posts` documents `content` and `visibility` as query parameters**, because they are `@RequestParam` on a multipart handler. Swagger UI therefore puts them in the query string. It binds correctly — Spring reads `@RequestParam` from multipart form fields too — but post content ends up in access logs, so switch them to `@RequestPart` if that matters.
+
+## File storage
+
+`FILESYSTEM_DISK` selects the backend — `local` (filesystem) or `r2` (Cloudflare R2 over its
+S3-compatible API) — and `StorageConfig` builds the matching `StorageService` in one bean method,
+the same shape as `EmailConfig`. Every upload path in the app goes through that one seam:
+`UserServiceImpl.updateAvatar`, `PostServiceImpl.storeImages`/`delete`, and the `image.process`
+consumer's read-and-replace. None of them knows which backend it is talking to.
+
+- **The R2 config names two hosts and they are not interchangeable.** `R2_ENDPOINT` is the private
+  S3 API host the SDK signs against and carries **no** bucket name; `R2_URL` is the public r2.dev or
+  custom domain that stored URLs are built from, and the only one that ever reaches a client. Swap
+  them and uploads succeed while every image 404s.
+- **Selecting `r2` with an incomplete configuration fails the context start**, naming the missing
+  property. The alternative — falling back to local disk — writes user uploads to a container
+  filesystem that the next deploy erases, and nothing would report it.
+- **The AWS SDK is pinned through its imported BOM** (`aws-sdk.version` in `pom.xml`); Boot does not
+  manage it. Mixed SDK artifact versions are the usual source of `NoSuchMethodError` here.
+- **Checksums are set to `WHEN_REQUIRED`.** Recent SDK versions attach a CRC32 trailer to every
+  request by default, which R2, S3-compatible but not S3, rejects on some paths.
+- **Uploads carry `Cache-Control: public, max-age=3600`, deliberately not `immutable`.** The
+  `image.process` stage rewrites the object at the same key, so a long-lived cache entry would pin
+  the full-size original in front of the downscaled one.
+- **Validation is in `AbstractStorageService`, not in either backend** (Template Method): reject
+  empty, cap the size, check the content type against the allowlist, generate the stored name, and
+  prove the bytes decode as an image. That is the security-critical half, and two copies of it would
+  eventually stop agreeing. `keyFor` maps a stored URL back to an object key and is the single place
+  a foreign or traversing URL is rejected, so no backend can be steered outside its own prefix.
+
+## Docker
+
+`docker compose up -d` brings up the app plus Postgres, Redis and RabbitMQ; `README-DOCKER.md` is
+the user-facing guide, including how to hand a copy to someone else.
+
+- **Every compose value has a working default**, so a fresh clone with no `.env` still runs — on the
+  `dev` profile, with `FILESYSTEM_DISK=local` and no credentials of any kind. That is what makes the
+  stack shareable: a second person needs the compose file, never the secrets.
+- **Compose reads `.env` for its `${...}` defaults**, so a real R2 bucket or SMTP host is picked up
+  automatically without ever entering the image. `.env` is in `.dockerignore` as well as
+  `.gitignore` — the build context is uploaded to the daemon and anything in it can land in a layer.
+- **The service names are the hostnames.** `DB_URL` points at `postgres`, not `localhost`; inside
+  the compose network `localhost` is the container itself. This is the usual first failure when
+  copying settings out of `application-dev.properties`.
+- **The app waits on health checks**, not on `depends_on` alone: Flyway cannot migrate a Postgres
+  that is still starting, and the container would exit before the retry.
+- **Tests are skipped in the image build** (`-DskipTests`). They need Postgres, Redis and RabbitMQ,
+  none of which exist in a build container; run them against the running stack instead.
+- **An optional secret is listed in compose with no value at all** (`JWT_SECRET:`), never as
+  `${JWT_SECRET:-}`. The pass-through form omits the variable when it is unset; the `:-` form sets
+  it to an **empty string**, and an empty value *overrides* the `${JWT_SECRET:dev-fallback}` default
+  in `application-dev.properties` rather than falling back to it — the app then dies on
+  "app.jwt.secret must not be blank". Same shape as the `spring.mail.host` trap above: present-but-
+  empty is not the same as absent. The dev fallback is committed, so anyone who reads the repository
+  can mint a token; replace it before the port is reachable by anyone untrusted (OWASP A07).
+- **The Postgres volume mounts at `/var/lib/postgresql`, not `/var/lib/postgresql/data`.** Postgres
+  18 moved the cluster into a version-named subdirectory so `pg_upgrade --link` does not cross a
+  mount boundary. The old path makes the container log a wall of explanation and never become
+  healthy, which reads like a healthcheck bug.
+- **`/data/uploads` is created and chowned in the Dockerfile, before the `USER` switch.** Docker
+  seeds a fresh named volume from whatever the image holds at the mount point, ownership included,
+  so without that step the volume arrives owned by root and the unprivileged process cannot write to
+  it — surfacing as `INTERNAL_ERROR "Could not store file"` on the first upload, not at startup.
+- **Only 8080 and 15672 are published.** Postgres and Redis stay on the compose network so they
+  cannot collide with a native install; RabbitMQ's management UI can, and `RABBITMQ_UI_PORT` moves
+  it.
 
 ## Package naming
 
@@ -84,6 +160,7 @@ Where the build departs from the written spec, it is deliberate and recorded her
 - **There is no `REACTION` notification type.** Raising one would require `ReactionService` to resolve a target's owner through `PostService`, reintroducing exactly the cycle that `ReactionSyncConsumer` exists to avoid.
 - **`image.process` downscales the stored original in place** rather than writing a second derivative file. Rewriting the object at its existing URL means no schema column and no row update — every `PostImage` that referenced the image still does. Only JPEG and PNG are re-encoded: GIF may be animated and WebP has no ImageIO writer in the JDK, so re-encoding either would flatten or corrupt it, and both are left exactly as uploaded.
 - **`otp.send` delivers through `EmailService`.** `EmailConfig` selects `SmtpEmailService` when `spring.mail.host` is set and `LoggingEmailService` otherwise, resolved through an `ObjectProvider<JavaMailSender>` in one bean method rather than a pair of `@ConditionalOnMissingBean` beans, whose ordering in user configuration is easy to get subtly wrong. **Never set `spring.mail.host` to an empty value** — Boot creates a `JavaMailSender` whenever the property is present at all, which would select SMTP with nowhere to connect. The dev profile sets `app.email.log-codes=true` so codes appear at DEBUG and registration is completable locally; that flag must stay false anywhere real.
+- **Locally stored files are served by a resource handler in `WebConfig`, registered only for the local driver.** Without it the URLs `LocalStorageService` returns resolve to nothing — the driver stored the bytes but no route ever exposed them. The path comes from `StorageProperties.localFilesPattern()`, derived from `app.storage.public-base-url`, and both `WebConfig` and the permit rule in `SecurityConfig` call it: two hand-written copies of `/files/**` would eventually disagree. A public base URL with no path segment fails at startup rather than mounting the handler at `/**`.
 - **`GET /users/{id}/posts` filters visibility inside the query**, via `PostVisibilityService.visibleVisibilitiesFor`. Paging first and discarding invisible rows afterwards would report page totals that count posts the viewer never receives.
 - **Someone else's notification is reported as 404, not 403.** A 403 would confirm that the id exists, turning the endpoint into an enumeration oracle.
 - **Order matters in `SecurityConfig`.** `authorizeHttpRequests` matches in declaration order and a single `*` matches one whole path segment, so `/users/me` is listed *before* the public `/users/*` rule. Reversing them silently exposes the own-profile endpoint anonymously.

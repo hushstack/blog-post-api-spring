@@ -1,0 +1,127 @@
+# The whole stack. `docker compose up` is the only command needed — Postgres,
+# Redis and RabbitMQ come with it, and Flyway builds the schema on first start.
+#
+# Every value below has a working default, so a fresh clone runs with no .env at
+# all. Where a .env does exist, Docker Compose reads it for the ${...} defaults
+# here, which is how your own R2 and mail settings get picked up automatically
+# without ever being baked into the image.
+name: blog-post-api
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-db_blog_post_api_spring}
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      # Postgres 18 changed this: the image wants ONE mount at /var/lib/postgresql
+      # and puts the cluster in a version-named subdirectory itself, so that
+      # pg_upgrade can run without crossing a mount boundary. Mounting the older
+      # /var/lib/postgresql/data path makes the container refuse to start.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # The app waits on this: Flyway cannot migrate a database still starting up.
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres} -d ${POSTGRES_DB:-db_blog_post_api_spring}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      # Management UI at http://localhost:15672 (guest/guest). Handy for watching
+      # otp.send, image.process, feed.fanout and notification.dispatch move.
+      - "${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  app:
+    build:
+      context: .
+    # Name the built image so it can be pushed and pulled elsewhere. Override
+    # with APP_IMAGE to point at your registry account.
+    image: ${APP_IMAGE:-blog-post-api:latest}
+    restart: unless-stopped
+    ports:
+      # Left side is the host port. "8080:8080" binds every interface, which is
+      # what lets another machine on the network reach it; see README-DOCKER.md.
+      - "${APP_PORT:-8080}:8080"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    environment:
+      # dev, not prod: prod demands real MAIL_* and R2 values and refuses to
+      # start without them. dev also prints OTP codes when no SMTP is set, which
+      # is the only way to complete a registration on a machine with no mailbox.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+
+      # Service names, not localhost: inside the compose network each service is
+      # reachable by the name it is declared under.
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-db_blog_post_api_spring}
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+
+      # Listed with NO value on purpose. That form passes the variable through only
+      # when it is actually set, and omits it otherwise — whereas `${JWT_SECRET:-}`
+      # would set it to an empty string, and an empty value OVERRIDES the fallback
+      # in application-dev.properties instead of falling back to it. The app then
+      # dies on "app.jwt.secret must not be blank". Same trap as spring.mail.host.
+      # So: no .env, dev fallback applies; .env present, your real secret wins.
+      JWT_SECRET:
+
+      # Storage. Defaults to local so a fresh copy needs no credentials at all;
+      # uploads land in the named volume and are served back at /files.
+      FILESYSTEM_DISK: ${FILESYSTEM_DISK:-local}
+      STORAGE_PATH: /data/uploads
+      STORAGE_PUBLIC_URL: ${STORAGE_PUBLIC_URL:-http://localhost:${APP_PORT:-8080}/files}
+      SHARE_BASE_URL: ${SHARE_BASE_URL:-http://localhost:${APP_PORT:-8080}}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+
+      # Read only when FILESYSTEM_DISK=r2. Pass-through form again, so a copy with
+      # no .env carries no half-set R2 configuration at all.
+      R2_ACCESS_KEY_ID:
+      R2_SECRET_ACCESS_KEY:
+      R2_BUCKET:
+      R2_ENDPOINT:
+      R2_URL:
+      R2_REGION: ${R2_REGION:-auto}
+      R2_USE_PATH_STYLE_ENDPOINT: ${R2_USE_PATH_STYLE_ENDPOINT:-true}
+
+      MAIL_FROM: ${MAIL_FROM:-no-reply@localhost}
+    volumes:
+      - uploads:/data/uploads
+
+volumes:
+  postgres-data:
+  redis-data:
+  rabbitmq-data:
+  uploads:
