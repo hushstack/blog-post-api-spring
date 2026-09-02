@@ -55,24 +55,95 @@ git clone <your-repo-url> && cd blog-post-api-spring
 docker compose up -d
 ```
 
-**Option B — they pull a prebuilt image.** Nothing to compile on their side:
+**Option B — they pull a prebuilt image.** Nothing to compile on their side.
+Published to GHCR, which needs no account beyond the GitHub one that already
+owns this repository:
 
 ```bash
-# you, once — replace YOURNAME with your Docker Hub account
-docker login
-APP_IMAGE=YOURNAME/blog-post-api:latest docker compose build
-docker push YOURNAME/blog-post-api:latest
+# you, once. The default gh token has no package scope, hence the refresh.
+gh auth refresh -h github.com -s write:packages
+gh auth token | docker login ghcr.io -u YOURNAME --password-stdin
+
+docker compose build
+docker tag blog-post-api:latest ghcr.io/YOURNAME/blog-post-api:latest
+docker push ghcr.io/YOURNAME/blog-post-api:latest
 ```
+
+GHCR packages are **private by default**, and a private one fails their pull with
+`denied`. Make it public once, under your GitHub profile → Packages →
+`blog-post-api` → Package settings → Change visibility.
 
 Send them `docker-compose.yml` and this command:
 
 ```bash
-APP_IMAGE=YOURNAME/blog-post-api:latest docker compose up -d
+APP_IMAGE=ghcr.io/YOURNAME/blog-post-api:latest docker compose up -d
 ```
 
 Either way they get their own database, their own uploads and their own data.
 Their copy stores uploads on disk inside a Docker volume and serves them back at
 `/files`, so no Cloudflare R2 credentials are involved.
+
+## Using it from a Next.js frontend
+
+CORS is already configured for `http://localhost:3000`, the Next.js default, so
+`fetch` from the browser works with no change. Only `Authorization` and
+`Content-Type` are accepted as request headers, and credentials are allowed.
+
+```ts
+const res = await fetch("http://localhost:8080/api/v1/users/me", {
+  headers: { Authorization: `Bearer ${accessToken}` },
+});
+const { success, data } = await res.json();
+```
+
+Every response is enveloped: `{success, data, timestamp}` on success, and
+`{success: false, code, message, fieldErrors, path, timestamp}` on failure, where
+`code` is a stable machine-readable name. Error responses carry the CORS headers
+too, so the body is readable rather than opaque.
+
+Four things that bite:
+
+- **Next.js on a port other than 3000** — set the origin explicitly, or the
+  browser blocks every call: `CORS_ALLOWED_ORIGINS=http://localhost:3001 docker
+  compose up -d`. The value is a comma-separated list, so several may be listed.
+- **`next/image` refuses unconfigured hosts.** Avatar and post image URLs come
+  back absolute, pointing at wherever the storage driver put them, and the
+  component rejects any host not declared. In `next.config.ts`:
+
+  ```ts
+  images: {
+    remotePatterns: [
+      // local driver — the default in this compose stack
+      { protocol: "http", hostname: "localhost", port: "8080", pathname: "/files/**" },
+      // r2 driver — the bucket's public host
+      { protocol: "https", hostname: "*.r2.dev", pathname: "/**" },
+    ],
+  }
+  ```
+
+  A plain `<img>` needs none of this; it is `next/image` that is strict.
+- **Server Components and route handlers never hit CORS**, because the request
+  comes from Node rather than a browser — but the URL still has to resolve from
+  wherever that process runs. If the frontend is itself in a container,
+  `localhost:8080` is that container, not the API: use `host.docker.internal:8080`,
+  or put both on one compose network and use the service name `app:8080`.
+- **Multipart uploads: do not set `Content-Type` yourself.** Pass the `FormData`
+  as the body and let the browser write the header — setting it by hand omits the
+  multipart boundary and the request fails.
+
+  ```ts
+  const body = new FormData();
+  body.append("file", file);
+  await fetch("http://localhost:8080/api/v1/users/me/avatar", {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${accessToken}` }, // no Content-Type
+    body,
+  });
+  ```
+
+The full endpoint list, request shapes and response schemas are in Swagger UI at
+**http://localhost:8080/swagger-ui.html**, and the raw OpenAPI document at
+`/v3/api-docs` — which most TypeScript client generators will take directly.
 
 ## Which address does it answer on?
 
