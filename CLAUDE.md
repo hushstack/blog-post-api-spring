@@ -65,7 +65,16 @@ Flyway owns the schema. `ddl-auto` is `validate` in **every** profile, set once 
 
 Rate limiting is opt-in per handler via `@RateLimited` on a controller method, enforced by `RateLimitInterceptor` (registered for all paths in `WebConfig`) against a fixed-window counter in Redis. Authenticated callers are bucketed by user id, anonymous ones by `getRemoteAddr()` — deliberately not `X-Forwarded-For`, which a client can set freely; behind a proxy set `server.forward-headers-strategy` so the container resolves the real address first. It fails **open** when Redis is unreachable, on the grounds that a Redis outage should not lock everyone out of login. The auth endpoints carry limits; a handler without the annotation is unlimited.
 
-Actuator exposes `/actuator/health` only, with `show-details=never`. Widening `management.endpoints.web.exposure.include` puts the widened set behind the security chain, so authorize it deliberately. Swagger UI is on at `/swagger-ui.html` in dev and switched off entirely in prod.
+Actuator exposes `/actuator/health` only, with `show-details=never`. Widening `management.endpoints.web.exposure.include` puts the widened set behind the security chain, so authorize it deliberately.
+
+## Swagger UI
+
+On at `/swagger-ui.html` in dev, and switched off entirely in prod — `springdoc.api-docs.enabled` and `springdoc.swagger-ui.enabled` are both false there, so none of the UI settings in the base file reach a deployed environment. `SecurityConfig` permits `/swagger-ui/**`, `/swagger-ui.html` and `/v3/api-docs/**`.
+
+- **The error envelope is attached in `OpenApiConfig`, not by annotating handlers.** An `OperationCustomizer` sets `ApiErrorResponse` as the OpenAPI `default` response on every operation, and an `OpenApiCustomizer` registers the schema, which no handler signature mentions. `default` means "any status not listed", which is exactly what `GlobalExceptionHandler` guarantees — enumerating 400/401/404 per handler would be a per-endpoint guess, and a guess goes stale.
+- **`springdoc.swagger-ui.persist-authorization=true`** keeps the bearer token across page reloads, in browser localStorage. A real place for a token to sit, and the reason it is scoped to the profiles where the UI exists at all.
+- **`info.description` carries the token walkthrough** — where the OTP surfaces (emailed when `spring.mail.host` is set, printed at DEBUG when it is not) and what to paste where. Keep it in step with `EmailConfig`, and **keep it short**: Swagger UI renders the description above the Servers row, so a long one pushes the **Authorize** button — the only place a token can be entered — down the page, where testers do not find it.
+- **`POST /posts` documents `content` and `visibility` as query parameters**, because they are `@RequestParam` on a multipart handler. Swagger UI therefore puts them in the query string. It binds correctly — Spring reads `@RequestParam` from multipart form fields too — but post content ends up in access logs, so switch them to `@RequestPart` if that matters.
 
 ## File storage
 
