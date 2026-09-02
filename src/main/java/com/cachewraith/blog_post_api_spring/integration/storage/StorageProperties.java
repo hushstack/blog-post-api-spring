@@ -40,6 +40,44 @@ public class StorageProperties {
     private final R2 r2 = new R2();
 
     /**
+     * Ant pattern the locally stored files are served under, derived from {@link #publicBaseUrl}
+     * so the resource handler in {@code WebConfig} and the permit rule in {@code SecurityConfig}
+     * cannot drift apart — two hand-written copies of "/files/**" would.
+     *
+     * <p>Only meaningful for {@link Driver#LOCAL}: an R2 bucket serves its own objects.
+     */
+    public String localFilesPattern() {
+        String path = java.net.URI.create(publicBaseUrl).getPath();
+        if (path == null || path.isBlank() || "/".equals(path)) {
+            // Serving from "/**" would put the whole application behind a static handler and
+            // permit it anonymously. Refuse rather than guess (OWASP A01).
+            throw new IllegalStateException(
+                    "app.storage.public-base-url must include a path segment (e.g. .../files) "
+                            + "when app.storage.driver=local, but was: " + publicBaseUrl);
+        }
+        return (path.endsWith("/") ? path.substring(0, path.length() - 1) : path) + "/**";
+    }
+
+    /**
+     * A stored URL is built by concatenating the base with {@code "/" + key}, so a configured
+     * trailing slash would produce a double one and then fail to resolve back to its key.
+     */
+    public void setPublicBaseUrl(String publicBaseUrl) {
+        this.publicBaseUrl = trimTrailingSlash(publicBaseUrl);
+    }
+
+    static String trimTrailingSlash(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.strip();
+        while (trimmed.endsWith("/")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        return trimmed;
+    }
+
+    /**
      * Cloudflare R2. Two hosts are in play and they are not interchangeable: {@code endpoint} is the
      * private S3 API host that the SDK signs requests against, {@code publicUrl} is the r2.dev (or
      * custom) domain that readers fetch the object from and the only one that ever reaches a client.

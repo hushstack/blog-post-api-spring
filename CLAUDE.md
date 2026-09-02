@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-All commands use the Maven wrapper from the project root.
+All commands use the Maven wrapper from the project root. To run the whole stack —
+app, Postgres, Redis, RabbitMQ — without a local Java or database install, use Docker
+instead: `docker compose up -d`. See `README-DOCKER.md`.
 
 ```bash
 ./mvnw spring-boot:run              # run the app (DevTools restart is active)
@@ -104,6 +106,43 @@ consumer's read-and-replace. None of them knows which backend it is talking to.
   eventually stop agreeing. `keyFor` maps a stored URL back to an object key and is the single place
   a foreign or traversing URL is rejected, so no backend can be steered outside its own prefix.
 
+## Docker
+
+`docker compose up -d` brings up the app plus Postgres, Redis and RabbitMQ; `README-DOCKER.md` is
+the user-facing guide, including how to hand a copy to someone else.
+
+- **Every compose value has a working default**, so a fresh clone with no `.env` still runs — on the
+  `dev` profile, with `FILESYSTEM_DISK=local` and no credentials of any kind. That is what makes the
+  stack shareable: a second person needs the compose file, never the secrets.
+- **Compose reads `.env` for its `${...}` defaults**, so a real R2 bucket or SMTP host is picked up
+  automatically without ever entering the image. `.env` is in `.dockerignore` as well as
+  `.gitignore` — the build context is uploaded to the daemon and anything in it can land in a layer.
+- **The service names are the hostnames.** `DB_URL` points at `postgres`, not `localhost`; inside
+  the compose network `localhost` is the container itself. This is the usual first failure when
+  copying settings out of `application-dev.properties`.
+- **The app waits on health checks**, not on `depends_on` alone: Flyway cannot migrate a Postgres
+  that is still starting, and the container would exit before the retry.
+- **Tests are skipped in the image build** (`-DskipTests`). They need Postgres, Redis and RabbitMQ,
+  none of which exist in a build container; run them against the running stack instead.
+- **An optional secret is listed in compose with no value at all** (`JWT_SECRET:`), never as
+  `${JWT_SECRET:-}`. The pass-through form omits the variable when it is unset; the `:-` form sets
+  it to an **empty string**, and an empty value *overrides* the `${JWT_SECRET:dev-fallback}` default
+  in `application-dev.properties` rather than falling back to it — the app then dies on
+  "app.jwt.secret must not be blank". Same shape as the `spring.mail.host` trap above: present-but-
+  empty is not the same as absent. The dev fallback is committed, so anyone who reads the repository
+  can mint a token; replace it before the port is reachable by anyone untrusted (OWASP A07).
+- **The Postgres volume mounts at `/var/lib/postgresql`, not `/var/lib/postgresql/data`.** Postgres
+  18 moved the cluster into a version-named subdirectory so `pg_upgrade --link` does not cross a
+  mount boundary. The old path makes the container log a wall of explanation and never become
+  healthy, which reads like a healthcheck bug.
+- **`/data/uploads` is created and chowned in the Dockerfile, before the `USER` switch.** Docker
+  seeds a fresh named volume from whatever the image holds at the mount point, ownership included,
+  so without that step the volume arrives owned by root and the unprivileged process cannot write to
+  it — surfacing as `INTERNAL_ERROR "Could not store file"` on the first upload, not at startup.
+- **Only 8080 and 15672 are published.** Postgres and Redis stay on the compose network so they
+  cannot collide with a native install; RabbitMQ's management UI can, and `RABBITMQ_UI_PORT` moves
+  it.
+
 ## Package naming
 
 The root package is `com.cachewraith.blog_post_api_spring` — with an underscore, because the artifact id `blog-post-api-spring` is not a legal package name. New packages nest under this exact root; do not "fix" the underscore.
@@ -121,6 +160,7 @@ Where the build departs from the written spec, it is deliberate and recorded her
 - **There is no `REACTION` notification type.** Raising one would require `ReactionService` to resolve a target's owner through `PostService`, reintroducing exactly the cycle that `ReactionSyncConsumer` exists to avoid.
 - **`image.process` downscales the stored original in place** rather than writing a second derivative file. Rewriting the object at its existing URL means no schema column and no row update — every `PostImage` that referenced the image still does. Only JPEG and PNG are re-encoded: GIF may be animated and WebP has no ImageIO writer in the JDK, so re-encoding either would flatten or corrupt it, and both are left exactly as uploaded.
 - **`otp.send` delivers through `EmailService`.** `EmailConfig` selects `SmtpEmailService` when `spring.mail.host` is set and `LoggingEmailService` otherwise, resolved through an `ObjectProvider<JavaMailSender>` in one bean method rather than a pair of `@ConditionalOnMissingBean` beans, whose ordering in user configuration is easy to get subtly wrong. **Never set `spring.mail.host` to an empty value** — Boot creates a `JavaMailSender` whenever the property is present at all, which would select SMTP with nowhere to connect. The dev profile sets `app.email.log-codes=true` so codes appear at DEBUG and registration is completable locally; that flag must stay false anywhere real.
+- **Locally stored files are served by a resource handler in `WebConfig`, registered only for the local driver.** Without it the URLs `LocalStorageService` returns resolve to nothing — the driver stored the bytes but no route ever exposed them. The path comes from `StorageProperties.localFilesPattern()`, derived from `app.storage.public-base-url`, and both `WebConfig` and the permit rule in `SecurityConfig` call it: two hand-written copies of `/files/**` would eventually disagree. A public base URL with no path segment fails at startup rather than mounting the handler at `/**`.
 - **`GET /users/{id}/posts` filters visibility inside the query**, via `PostVisibilityService.visibleVisibilitiesFor`. Paging first and discarding invisible rows afterwards would report page totals that count posts the viewer never receives.
 - **Someone else's notification is reported as 404, not 403.** A 403 would confirm that the id exists, turning the endpoint into an enumeration oracle.
 - **Order matters in `SecurityConfig`.** `authorizeHttpRequests` matches in declaration order and a single `*` matches one whole path segment, so `/users/me` is listed *before* the public `/users/*` rule. Reversing them silently exposes the own-profile endpoint anonymously.
