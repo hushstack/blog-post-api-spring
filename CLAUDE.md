@@ -40,7 +40,7 @@ Runtime dependencies: PostgreSQL, Redis, RabbitMQ. The app will not start withou
 
 Config is split three ways: `application.properties` holds shared settings and reads secrets from the environment; `application-dev.properties` supplies localhost defaults; `application-prod.properties` supplies nothing and requires every value from the environment. Profile files override the base, which is why `app.jwt.secret` can have no default in the base file and still boot in dev.
 
-Environment variables in play: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`, `RABBITMQ_*`, `JWT_SECRET`, `CORS_ALLOWED_ORIGINS`, `STORAGE_PATH`, `STORAGE_PUBLIC_URL`, `SHARE_BASE_URL`, `MAIL_HOST`/`MAIL_PORT`/`MAIL_USERNAME`/`MAIL_PASSWORD`/`MAIL_FROM`. `JWT_SECRET` must be at least 32 bytes — `JwtProvider` refuses to start otherwise, deliberately. The `MAIL_*` set is required in prod and absent in dev, which is what selects the no-delivery mail fallback locally.
+Environment variables in play: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`, `RABBITMQ_*`, `JWT_SECRET`, `CORS_ALLOWED_ORIGINS`, `FILESYSTEM_DISK`, `STORAGE_PATH`, `STORAGE_PUBLIC_URL`, `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_BUCKET`/`R2_REGION`/`R2_ENDPOINT`/`R2_URL`/`R2_USE_PATH_STYLE_ENDPOINT`, `SHARE_BASE_URL`, `MAIL_HOST`/`MAIL_PORT`/`MAIL_USERNAME`/`MAIL_PASSWORD`/`MAIL_FROM`. `JWT_SECRET` must be at least 32 bytes — `JwtProvider` refuses to start otherwise, deliberately. The `MAIL_*` set is required in prod and absent in dev, which is what selects the no-delivery mail fallback locally.
 
 ## Database migrations
 
@@ -66,6 +66,34 @@ Flyway owns the schema. `ddl-auto` is `validate` in **every** profile, set once 
 Rate limiting is opt-in per handler via `@RateLimited` on a controller method, enforced by `RateLimitInterceptor` (registered for all paths in `WebConfig`) against a fixed-window counter in Redis. Authenticated callers are bucketed by user id, anonymous ones by `getRemoteAddr()` — deliberately not `X-Forwarded-For`, which a client can set freely; behind a proxy set `server.forward-headers-strategy` so the container resolves the real address first. It fails **open** when Redis is unreachable, on the grounds that a Redis outage should not lock everyone out of login. The auth endpoints carry limits; a handler without the annotation is unlimited.
 
 Actuator exposes `/actuator/health` only, with `show-details=never`. Widening `management.endpoints.web.exposure.include` puts the widened set behind the security chain, so authorize it deliberately. Swagger UI is on at `/swagger-ui.html` in dev and switched off entirely in prod.
+
+## File storage
+
+`FILESYSTEM_DISK` selects the backend — `local` (filesystem) or `r2` (Cloudflare R2 over its
+S3-compatible API) — and `StorageConfig` builds the matching `StorageService` in one bean method,
+the same shape as `EmailConfig`. Every upload path in the app goes through that one seam:
+`UserServiceImpl.updateAvatar`, `PostServiceImpl.storeImages`/`delete`, and the `image.process`
+consumer's read-and-replace. None of them knows which backend it is talking to.
+
+- **The R2 config names two hosts and they are not interchangeable.** `R2_ENDPOINT` is the private
+  S3 API host the SDK signs against and carries **no** bucket name; `R2_URL` is the public r2.dev or
+  custom domain that stored URLs are built from, and the only one that ever reaches a client. Swap
+  them and uploads succeed while every image 404s.
+- **Selecting `r2` with an incomplete configuration fails the context start**, naming the missing
+  property. The alternative — falling back to local disk — writes user uploads to a container
+  filesystem that the next deploy erases, and nothing would report it.
+- **The AWS SDK is pinned through its imported BOM** (`aws-sdk.version` in `pom.xml`); Boot does not
+  manage it. Mixed SDK artifact versions are the usual source of `NoSuchMethodError` here.
+- **Checksums are set to `WHEN_REQUIRED`.** Recent SDK versions attach a CRC32 trailer to every
+  request by default, which R2, S3-compatible but not S3, rejects on some paths.
+- **Uploads carry `Cache-Control: public, max-age=3600`, deliberately not `immutable`.** The
+  `image.process` stage rewrites the object at the same key, so a long-lived cache entry would pin
+  the full-size original in front of the downscaled one.
+- **Validation is in `AbstractStorageService`, not in either backend** (Template Method): reject
+  empty, cap the size, check the content type against the allowlist, generate the stored name, and
+  prove the bytes decode as an image. That is the security-critical half, and two copies of it would
+  eventually stop agreeing. `keyFor` maps a stored URL back to an object key and is the single place
+  a foreign or traversing URL is rejected, so no backend can be steered outside its own prefix.
 
 ## Package naming
 
