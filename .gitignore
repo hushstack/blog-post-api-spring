@@ -37,3 +37,6 @@ build/
 .env
 .env.*
 !.env.example
+
+### Deployment-specific, this server only ###
+docker-compose.override.yml
