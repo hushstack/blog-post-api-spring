@@ -17,6 +17,17 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import com.cachewraith.blog_post_api_spring.common.response.PageResponse;
+import com.cachewraith.blog_post_api_spring.modules.reaction.dto.v1.response.ReactorResponse;
+import com.cachewraith.blog_post_api_spring.modules.reaction.entity.ReactionType;
+import com.cachewraith.blog_post_api_spring.modules.user.dto.v1.response.AuthorSummary;
+import com.cachewraith.blog_post_api_spring.modules.user.service.UserService;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import java.util.Set;
+import java.util.stream.Collectors;
+import com.cachewraith.blog_post_api_spring.modules.friendship.dto.v1.response.FriendStatus;
+import com.cachewraith.blog_post_api_spring.modules.friendship.service.FriendshipService;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -41,17 +52,26 @@ public class ReactionServiceImpl implements ReactionService {
     private final PostVisibilityService postVisibilityService;
     private final StringRedisTemplate redis;
     private final EventPublisher eventPublisher;
+    private final UserService userService;
+    private final FriendshipService friendshipService;
 
+    /**
+     * Toggle rather than separate add/remove: a client with one button sends one request and
+     * never has to know its own prior state, which also removes the double-tap race where a
+     * stale "not reacted" view issues an add on top of an existing reaction.
+     */
     @Override
     @Transactional
-    public ReactionSummaryResponse upsert(
+    public ReactionSummaryResponse toggle(
             UUID userId, TargetType targetType, UUID targetId, ReactionRequest request) {
         assertTargetReachable(targetType, targetId, userId);
 
         Optional<Reaction> existing =
                 reactionRepository.findByTargetTypeAndTargetIdAndUserId(targetType, targetId, userId);
 
-        if (existing.isPresent()) {
+        if (existing.isPresent() && existing.get().getType() == request.type()) {
+            reactionRepository.delete(existing.get());
+        } else if (existing.isPresent()) {
             Reaction reaction = existing.get();
             reaction.setType(request.type());
             reactionRepository.save(reaction);
@@ -82,14 +102,35 @@ public class ReactionServiceImpl implements ReactionService {
     }
 
     @Override
-    @Transactional
-    public ReactionSummaryResponse remove(UUID userId, TargetType targetType, UUID targetId) {
-        assertTargetReachable(targetType, targetId, userId);
-        reactionRepository.deleteByTargetTypeAndTargetIdAndUserId(targetType, targetId, userId);
+    @Transactional(readOnly = true)
+    public PageResponse<ReactorResponse> reactors(
+            TargetType targetType, UUID targetId, ReactionType type, UUID viewerId, Pageable pageable) {
+        // Same gate as summary: who reacted to a post is as private as the post (OWASP A01).
+        assertTargetReachable(targetType, targetId, viewerId);
 
-        invalidateCounts(targetType, targetId);
-        eventPublisher.syncReactions(new ReactionSyncEvent(targetType.name(), targetId));
-        return summary(targetType, targetId, userId);
+        Page<Reaction> page =
+                type == null
+                        ? reactionRepository.findByTargetTypeAndTargetIdOrderByCreatedAtDesc(
+                                targetType, targetId, pageable)
+                        : reactionRepository.findByTargetTypeAndTargetIdAndTypeOrderByCreatedAtDesc(
+                                targetType, targetId, type, pageable);
+
+        Set<UUID> userIds = page.getContent().stream().map(Reaction::getUserId).collect(Collectors.toSet());
+        Map<UUID, AuthorSummary> users =
+                userIds.isEmpty() ? Map.of() : userService.authorSummaries(userIds);
+        Map<UUID, FriendStatus> friendStatuses =
+                viewerId == null || userIds.isEmpty()
+                        ? Map.of()
+                        : friendshipService.statusesFor(viewerId, userIds);
+
+        return PageResponse.from(
+                page.map(
+                        r ->
+                                new ReactorResponse(
+                                        users.get(r.getUserId()),
+                                        r.getType().name(),
+                                        r.getCreatedAt(),
+                                        friendStatuses.get(r.getUserId()))));
     }
 
     @Override

@@ -44,7 +44,7 @@ public class CommentController {
     }
 
     @GetMapping("/posts/{id}/comments")
-    @Operation(summary = "List top-level comments on a post")
+    @Operation(summary = "List a post's comments, each with its replies nested")
     public ApiResponse<PageResponse<CommentResponse>> list(
             @CurrentUser AppUserPrincipal principal,
             @PathVariable UUID id,

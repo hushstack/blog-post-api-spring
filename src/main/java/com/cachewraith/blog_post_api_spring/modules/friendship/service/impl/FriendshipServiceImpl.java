@@ -16,6 +16,10 @@ import com.cachewraith.blog_post_api_spring.modules.user.service.UserService;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import com.cachewraith.blog_post_api_spring.modules.friendship.dto.v1.response.FriendStatus;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -159,5 +163,29 @@ public class FriendshipServiceImpl implements FriendshipService {
                 friendship.getStatus().name(),
                 friendship.getCreatedAt(),
                 friendship.getRespondedAt());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<UUID, FriendStatus> statusesFor(UUID viewerId, Collection<UUID> otherIds) {
+        Set<UUID> ids = Set.copyOf(otherIds);
+        Map<UUID, FriendStatus> result = new HashMap<>();
+        ids.forEach(id -> result.put(id, id.equals(viewerId) ? FriendStatus.SELF : FriendStatus.NONE));
+        if (ids.isEmpty()) {
+            return result;
+        }
+        for (Friendship f : friendshipRepository.findBetweenUserAndAny(viewerId, ids)) {
+            boolean viewerAsked = f.getRequesterId().equals(viewerId);
+            UUID other = viewerAsked ? f.getAddresseeId() : f.getRequesterId();
+            FriendStatus status =
+                    switch (f.getStatus()) {
+                        case ACCEPTED -> FriendStatus.FRIENDS;
+                        case PENDING ->
+                                viewerAsked ? FriendStatus.REQUEST_SENT : FriendStatus.REQUEST_RECEIVED;
+                        case DECLINED, BLOCKED -> FriendStatus.NONE;
+                    };
+            result.put(other, status);
+        }
+        return result;
     }
 }

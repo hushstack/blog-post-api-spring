@@ -17,7 +17,7 @@ public class LoggingEmailService implements EmailService {
     private final EmailProperties properties;
 
     @Override
-    public void sendOtp(String recipient, String code, String purpose) {
+    public void sendOtp(String recipient, String code, String purpose, int expiresInMinutes) {
         log.warn("No mail host configured — {} OTP for {} was NOT delivered", purpose, recipient);
         if (properties.isLogCodes()) {
             // Guarded by app.email.log-codes and emitted at DEBUG: a code in a log is a code

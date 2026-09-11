@@ -92,7 +92,21 @@ public class CommentServiceImpl implements CommentService {
                 commentRepository.findByPostIdAndParentCommentIdIsNullOrderByCreatedAtDesc(
                         postId, pageable);
 
-        List<CommentResponse> content = toResponses(page.getContent(), viewerId);
+        // Replies for the whole page in one query, then grouped under their parents. Paging
+        // applies to top-level comments only; a thread is never cut in half.
+        Set<UUID> parentIds = page.getContent().stream().map(Comment::getId).collect(Collectors.toSet());
+        Map<UUID, List<CommentResponse>> repliesByParent =
+                parentIds.isEmpty()
+                        ? Map.of()
+                        : toResponses(
+                                        commentRepository.findByParentCommentIdInOrderByCreatedAtAsc(
+                                                parentIds),
+                                        viewerId,
+                                        Map.of())
+                                .stream()
+                                .collect(Collectors.groupingBy(CommentResponse::parentCommentId));
+
+        List<CommentResponse> content = toResponses(page.getContent(), viewerId, repliesByParent);
         return new PageResponse<>(
                 content,
                 page.getNumber(),
@@ -121,6 +135,13 @@ public class CommentServiceImpl implements CommentService {
     }
 
     private List<CommentResponse> toResponses(List<Comment> comments, UUID viewerId) {
+        return toResponses(comments, viewerId, Map.of());
+    }
+
+    private List<CommentResponse> toResponses(
+            List<Comment> comments,
+            UUID viewerId,
+            Map<UUID, List<CommentResponse>> repliesByParent) {
         if (comments.isEmpty()) {
             return List.of();
         }
@@ -146,7 +167,8 @@ public class CommentServiceImpl implements CommentService {
                                     comment.getContent(),
                                     summary.total(),
                                     summary.viewerReaction(),
-                                    comment.getCreatedAt());
+                                    comment.getCreatedAt(),
+                                    repliesByParent.getOrDefault(comment.getId(), List.of()));
                         })
                 .toList();
     }

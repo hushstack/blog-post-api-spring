@@ -46,6 +46,10 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-guest}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
     ports:
+      # AMQP itself, published so an app run natively on the host (./mvnw
+      # spring-boot:run) can use this broker too — inside the compose network the
+      # app container reaches it as rabbitmq:5672 and needs no host port at all.
+      - "${RABBITMQ_AMQP_PORT:-5672}:5672"
       # Management UI at http://localhost:15672 (guest/guest). Handy for watching
       # otp.send, image.process, feed.fanout and notification.dispatch move.
       - "${RABBITMQ_UI_PORT:-15672}:15672"
@@ -117,6 +121,17 @@ services:
       R2_USE_PATH_STYLE_ENDPOINT: ${R2_USE_PATH_STYLE_ENDPOINT:-true}
 
       MAIL_FROM: ${MAIL_FROM:-no-reply@localhost}
+
+      # SMTP. Read only when `mail` is in SPRING_PROFILES_ACTIVE — see
+      # application-mail.properties. Pass-through form again, exactly like JWT_SECRET and the
+      # R2 block above and for the same reason: `${MAIL_HOST:-}` sets an EMPTY value, and
+      # present-but-empty is not absent. Note these are the MAIL_* names, never the dotted
+      # spring.mail.* ones: an environment variable named spring.mail.host turns the mail
+      # autoconfiguration on and then fails to bind, giving a sender with no host at all.
+      MAIL_HOST:
+      MAIL_PORT:
+      MAIL_USERNAME:
+      MAIL_PASSWORD:
     volumes:
       - uploads:/data/uploads
 

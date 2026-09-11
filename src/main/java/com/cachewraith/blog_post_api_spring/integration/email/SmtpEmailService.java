@@ -15,12 +15,12 @@ public class SmtpEmailService implements EmailService {
     private final EmailProperties properties;
 
     @Override
-    public void sendOtp(String recipient, String code, String purpose) {
+    public void sendOtp(String recipient, String code, String purpose, int expiresInMinutes) {
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(properties.getFrom());
         message.setTo(recipient);
         message.setSubject(subjectFor(purpose));
-        message.setText(bodyFor(code, purpose));
+        message.setText(bodyFor(code, purpose, expiresInMinutes));
 
         try {
             mailSender.send(message);
@@ -40,7 +40,7 @@ public class SmtpEmailService implements EmailService {
                 : properties.getAppName() + " verification code";
     }
 
-    private String bodyFor(String code, String purpose) {
+    private String bodyFor(String code, String purpose, int expiresInMinutes) {
         String action =
                 "RESET_PASSWORD".equals(purpose)
                         ? "reset your password"
@@ -52,6 +52,6 @@ public class SmtpEmailService implements EmailService {
 
                 It expires in %d minutes. If you did not request it, ignore this message.
                 """
-                .formatted(properties.getAppName(), action, code, properties.getOtpTtlMinutes());
+                .formatted(properties.getAppName(), action, code, expiresInMinutes);
     }
 }

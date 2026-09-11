@@ -74,6 +74,8 @@ public class SecurityConfig {
                                                 v1 + "/posts/*",
                                                 v1 + "/posts/*/comments",
                                                 v1 + "/posts/*/share-link",
+                                                v1 + "/reactions/*/*",
+                                                v1 + "/reactions/*/*/summary",
                                                 v1 + "/users/*",
                                                 v1 + "/users/*/posts")
                                         .permitAll()

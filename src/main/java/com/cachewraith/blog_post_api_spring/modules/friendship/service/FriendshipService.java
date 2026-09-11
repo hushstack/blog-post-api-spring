@@ -2,6 +2,9 @@ package com.cachewraith.blog_post_api_spring.modules.friendship.service;
 
 import com.cachewraith.blog_post_api_spring.common.response.PageResponse;
 import com.cachewraith.blog_post_api_spring.modules.friendship.dto.v1.response.FriendshipResponse;
+import com.cachewraith.blog_post_api_spring.modules.friendship.dto.v1.response.FriendStatus;
+import java.util.Collection;
+import java.util.Map;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Pageable;
@@ -24,4 +27,10 @@ public interface FriendshipService {
     List<UUID> friendIds(UUID userId);
 
     boolean areFriends(UUID a, UUID b);
+
+    /**
+     * The viewer's {@link FriendStatus} toward each of {@code otherIds}, in one query. Every id
+     * requested is present in the result, NONE when no row exists.
+     */
+    Map<UUID, FriendStatus> statusesFor(UUID viewerId, Collection<UUID> otherIds);
 }

@@ -90,7 +90,7 @@ public class PostServiceImpl implements PostService {
                                                 : request.visibility())
                                 .build());
 
-        List<String> urls = storeImages(post.getId(), files);
+        List<String> urls = storeImages(post.getId(), files, 0);
 
         if (!urls.isEmpty()) {
             eventPublisher.processImages(new ImageProcessEvent(post.getId(), authorId, urls));
@@ -109,8 +109,10 @@ public class PostServiceImpl implements PostService {
 
     @Override
     @Transactional
-    public PostResponse update(UUID postId, UUID userId, UpdatePostRequest request) {
+    public PostResponse update(
+            UUID postId, UUID userId, UpdatePostRequest request, List<MultipartFile> newImages) {
         Post post = visibility.requireOwned(postId, userId);
+        List<MultipartFile> files = newImages == null ? List.of() : newImages;
 
         if (request.content() != null) {
             post.setContent(request.content());
@@ -118,6 +120,47 @@ public class PostServiceImpl implements PostService {
         if (request.visibility() != null) {
             post.setVisibility(request.visibility());
         }
+
+        List<PostImage> current = postImageRepository.findByPostIdOrderByPositionAsc(postId);
+        Set<UUID> toRemove = new HashSet<>(request.removeImageIdsOrEmpty());
+        // An id that is not on this post is rejected outright, and the same way whether it is on
+        // someone else's post or on none: the owner check above is the only authorization here,
+        // and a silent skip would let a bad id pass unnoticed (OWASP A01).
+        Set<UUID> ownIds = current.stream().map(PostImage::getId).collect(Collectors.toSet());
+        if (!ownIds.containsAll(toRemove)) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "removeImageIds names an image not on this post");
+        }
+
+        List<PostImage> kept = new ArrayList<>();
+        List<PostImage> removed = new ArrayList<>();
+        for (PostImage image : current) {
+            (toRemove.contains(image.getId()) ? removed : kept).add(image);
+        }
+
+        if (kept.size() + files.size() > MAX_IMAGES) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_FAILED, "At most " + MAX_IMAGES + " images per post");
+        }
+        if ((post.getContent() == null || post.getContent().isBlank())
+                && kept.isEmpty()
+                && files.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, "A post needs text or an image");
+        }
+
+        // Positions stay contiguous after a removal, so a later append lands at the end.
+        for (int i = 0; i < kept.size(); i++) {
+            kept.get(i).setPosition(i);
+        }
+        postImageRepository.saveAll(kept);
+        postImageRepository.deleteAll(removed);
+        removed.forEach(image -> storageService.delete(image.getUrl()));
+
+        List<String> urls = storeImages(postId, files, kept.size());
+        if (!urls.isEmpty()) {
+            eventPublisher.processImages(new ImageProcessEvent(postId, userId, urls));
+        }
+
         return toResponse(postRepository.save(post), userId, true);
     }
 
@@ -229,13 +272,18 @@ public class PostServiceImpl implements PostService {
         postRepository.setReactionCount(postId, count);
     }
 
-    private List<String> storeImages(UUID postId, List<MultipartFile> files) {
+    /** Stores {@code files} at positions {@code firstPosition}, {@code firstPosition + 1}, … */
+    private List<String> storeImages(UUID postId, List<MultipartFile> files, int firstPosition) {
         List<String> urls = new ArrayList<>();
         for (int i = 0; i < files.size(); i++) {
             String url = storageService.storeImage(files.get(i), POST_IMAGE_FOLDER);
             urls.add(url);
             postImageRepository.save(
-                    PostImage.builder().postId(postId).url(url).position(i).build());
+                    PostImage.builder()
+                            .postId(postId)
+                            .url(url)
+                            .position(firstPosition + i)
+                            .build());
         }
         return urls;
     }
@@ -274,7 +322,9 @@ public class PostServiceImpl implements PostService {
                                         Collectors.mapping(
                                                 image ->
                                                         new PostImageResponse(
-                                                                image.getUrl(), image.getPosition()),
+                                                                image.getId(),
+                                                                image.getUrl(),
+                                                                image.getPosition()),
                                                 Collectors.toList())));
 
         Map<UUID, ReactionSummaryResponse> reactions =
@@ -318,6 +368,7 @@ public class PostServiceImpl implements PostService {
                             post.getContent(),
                             imagesByPost.getOrDefault(post.getId(), List.of()),
                             post.getVisibility().name(),
+                            post.getAuthorId().equals(viewerId),
                             counts,
                             summary.viewerReaction(),
                             post.getCommentCount(),

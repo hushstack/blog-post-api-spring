@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -26,12 +27,19 @@ import org.springframework.transaction.annotation.Transactional;
  * (OWASP A04). Verification is capped at {@code OTP_MAX_ATTEMPTS} per window, which is what makes a
  * 6-digit secret defensible at all — without the cap it is a 10^6 space open to brute force
  * (OWASP A07).
+ *
+ * <p>Issue is throttled per account and purpose by {@code RESEND_COOLDOWN}: however many clients
+ * ask, one mailbox receives at most one code per window. The per-client cap on the controller
+ * does not cover this — an attacker with many addresses would otherwise be able to flood a single
+ * victim's inbox (OWASP A06).
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class OtpServiceImpl implements OtpService {
 
     private static final Duration OTP_TTL = Duration.ofMinutes(5);
+    private static final Duration RESEND_COOLDOWN = Duration.ofSeconds(60);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final StringRedisTemplate redis;
@@ -41,7 +49,17 @@ public class OtpServiceImpl implements OtpService {
 
     @Override
     @Transactional
-    public void issue(UUID userId, String email, OtpPurpose purpose) {
+    public boolean issue(UUID userId, String email, OtpPurpose purpose) {
+        // SET NX EX: the first caller in the window wins, every later one is dropped. Dropped, not
+        // failed — the caller's response must not change, or it discloses that a code exists for
+        // this address and therefore that the account does (OWASP A07).
+        Boolean first =
+                redis.opsForValue().setIfAbsent(cooldownKey(userId, purpose), "1", RESEND_COOLDOWN);
+        if (!Boolean.TRUE.equals(first)) {
+            log.info("{} OTP for user {} suppressed: resend cooldown active", purpose, userId);
+            return false;
+        }
+
         String code = generateCode();
         String hash = passwordEncoder.encode(code);
 
@@ -57,7 +75,10 @@ public class OtpServiceImpl implements OtpService {
                         .consumed(false)
                         .build());
 
-        eventPublisher.sendOtp(new OtpSendEvent(userId, email, code, purpose.name()));
+        eventPublisher.sendOtp(
+                new OtpSendEvent(
+                        userId, email, code, purpose.name(), (int) OTP_TTL.toMinutes()));
+        return true;
     }
 
     @Override
@@ -92,5 +113,9 @@ public class OtpServiceImpl implements OtpService {
 
     private String attemptsKey(UUID userId, OtpPurpose purpose) {
         return AppConstants.KEY_OTP_ATTEMPTS + purpose.name().toLowerCase() + ":" + userId;
+    }
+
+    private String cooldownKey(UUID userId, OtpPurpose purpose) {
+        return AppConstants.KEY_OTP_COOLDOWN + purpose.name().toLowerCase() + ":" + userId;
     }
 }
