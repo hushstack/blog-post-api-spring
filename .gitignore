@@ -40,3 +40,4 @@ build/
 
 ### Deployment-specific, this server only ###
 docker-compose.override.yml
+*.swp
