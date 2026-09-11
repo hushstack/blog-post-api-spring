@@ -64,13 +64,35 @@ public class PostController {
         return ApiResponse.of(postService.get(id, principal == null ? null : principal.getId()));
     }
 
-    @PutMapping("/{id}")
-    @Operation(summary = "Update your own post")
+    /**
+     * Two handlers on one path, told apart by {@code consumes}: JSON for text, visibility and
+     * image removal; multipart for the same plus new files. Both land on one service method so
+     * the rules — image cap, "text or an image", owner only — exist once.
+     */
+    @PutMapping(value = "/{id}", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Update your own post (JSON: content, visibility, removeImageIds)")
     public ApiResponse<PostResponse> update(
             @CurrentUser AppUserPrincipal principal,
             @PathVariable UUID id,
             @Valid @RequestBody UpdatePostRequest request) {
-        return ApiResponse.of(postService.update(id, principal.getId(), request));
+        return ApiResponse.of(postService.update(id, principal.getId(), request, List.of()));
+    }
+
+    @PutMapping(value = "/{id}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Update your own post (form-data: same fields plus images to append)")
+    public ApiResponse<PostResponse> updateMultipart(
+            @CurrentUser AppUserPrincipal principal,
+            @PathVariable UUID id,
+            @RequestParam(required = false) String content,
+            @RequestParam(required = false) Visibility visibility,
+            @RequestParam(required = false) List<UUID> removeImageIds,
+            @RequestPart(name = "images", required = false) List<MultipartFile> images) {
+        return ApiResponse.of(
+                postService.update(
+                        id,
+                        principal.getId(),
+                        new UpdatePostRequest(content, visibility, removeImageIds),
+                        images));
     }
 
     @DeleteMapping("/{id}")

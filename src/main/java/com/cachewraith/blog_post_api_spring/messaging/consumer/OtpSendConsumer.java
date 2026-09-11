@@ -25,6 +25,7 @@ public class OtpSendConsumer {
     @RabbitListener(queues = RabbitMQConfig.QUEUE_OTP_SEND)
     public void handle(OtpSendEvent event) {
         log.info("Dispatching {} OTP for user {}", event.purpose(), event.userId());
-        emailService.sendOtp(event.email(), event.code(), event.purpose());
+        emailService.sendOtp(
+                event.email(), event.code(), event.purpose(), event.expiresInMinutes());
     }
 }

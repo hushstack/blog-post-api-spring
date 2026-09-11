@@ -12,5 +12,5 @@ public interface EmailService {
      * Delivers a one-time code. Implementations must never write {@code code} to the log above
      * DEBUG (OWASP A09).
      */
-    void sendOtp(String recipient, String code, String purpose);
+    void sendOtp(String recipient, String code, String purpose, int expiresInMinutes);
 }

@@ -14,9 +14,6 @@ public class EmailProperties {
 
     private String appName = "Blog";
 
-    /** How long recipients are told the code remains valid. Cosmetic; OtpService owns the real TTL. */
-    private int otpTtlMinutes = 10;
-
     /**
      * Writes OTP codes to the log when no mail provider is configured, so registration is testable
      * locally.

@@ -2,6 +2,7 @@ package com.cachewraith.blog_post_api_spring.modules.friendship.repository;
 
 import com.cachewraith.blog_post_api_spring.modules.friendship.entity.Friendship;
 import com.cachewraith.blog_post_api_spring.modules.friendship.entity.FriendshipStatus;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -22,6 +23,16 @@ public interface FriendshipRepository extends JpaRepository<Friendship, UUID> {
                or (f.requesterId = :b and f.addresseeId = :a)
             """)
     Optional<Friendship> findBetween(@Param("a") UUID a, @Param("b") UUID b);
+
+    /** Every row between {@code userId} and any of {@code otherIds}, either direction, one query. */
+    @Query(
+            """
+            select f from Friendship f
+            where (f.requesterId = :userId and f.addresseeId in :otherIds)
+               or (f.addresseeId = :userId and f.requesterId in :otherIds)
+            """)
+    List<Friendship> findBetweenUserAndAny(
+            @Param("userId") UUID userId, @Param("otherIds") Collection<UUID> otherIds);
 
     Page<Friendship> findByAddresseeIdAndStatus(
             UUID addresseeId, FriendshipStatus status, Pageable pageable);

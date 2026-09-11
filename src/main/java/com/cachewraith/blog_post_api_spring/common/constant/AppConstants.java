@@ -12,6 +12,7 @@ public final class AppConstants {
     /** Redis key prefixes. See CLAUDE.md / spec section 2. */
     public static final String KEY_OTP = "otp:";
     public static final String KEY_OTP_ATTEMPTS = "otp:attempts:";
+    public static final String KEY_OTP_COOLDOWN = "otp:cooldown:";
     public static final String KEY_RESET = "reset:";
     public static final String KEY_BLACKLIST = "blacklist:";
     public static final String KEY_REFRESH = "refresh:";

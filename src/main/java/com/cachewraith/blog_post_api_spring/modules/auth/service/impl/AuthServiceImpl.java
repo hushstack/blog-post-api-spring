@@ -7,10 +7,12 @@ import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.request.ForgotPa
 import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.request.LoginRequest;
 import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.request.RefreshRequest;
 import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.request.RegisterRequest;
+import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.request.ResendOtpRequest;
 import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.request.ResetPasswordRequest;
 import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.request.VerifyOtpRequest;
 import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.response.RegisterResponse;
 import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.response.TokenPairResponse;
+import com.cachewraith.blog_post_api_spring.modules.auth.dto.v1.response.VerifyOtpResponse;
 import com.cachewraith.blog_post_api_spring.modules.auth.entity.OtpPurpose;
 import com.cachewraith.blog_post_api_spring.modules.auth.service.AuthService;
 import com.cachewraith.blog_post_api_spring.modules.auth.service.OtpService;
@@ -24,7 +26,9 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import java.security.SecureRandom;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -74,21 +78,78 @@ public class AuthServiceImpl implements AuthService {
                 user.getId(), user.getEmail(), "Verification code sent to your email");
     }
 
+    /**
+     * One entry point for every OTP. The purpose comes from the account's state via
+     * {@link #purposeFor}, the same rule {@link #resendOtp} issues by, so the code that was sent
+     * is the code that is checked. A plain switch rather than a strategy per purpose: there are
+     * two, and the enum is closed.
+     */
     @Override
     @Transactional
-    public TokenPairResponse verifyOtp(VerifyOtpRequest request) {
+    public VerifyOtpResponse verifyOtp(VerifyOtpRequest request) {
+        // Same OTP_INVALID for an unknown address, a suspended account and a wrong code: a distinct
+        // response would turn this into an account-enumeration oracle (OWASP A07).
         User user =
                 userRepository
                         .findByEmailIgnoreCase(request.email())
                         .orElseThrow(() -> new BusinessException(ErrorCode.OTP_INVALID));
+        OtpPurpose purpose =
+                purposeFor(user).orElseThrow(() -> new BusinessException(ErrorCode.OTP_INVALID));
 
-        otpService.verify(user.getId(), request.code(), OtpPurpose.REGISTER);
+        otpService.verify(user.getId(), request.code(), purpose);
 
-        if (user.getStatus() == UserStatus.PENDING_VERIFICATION) {
-            user.setStatus(UserStatus.ACTIVE);
-            userRepository.save(user);
-        }
-        return issueTokens(user.getId());
+        return switch (purpose) {
+            case REGISTER -> {
+                user.setStatus(UserStatus.ACTIVE);
+                userRepository.save(user);
+                yield VerifyOtpResponse.registered(issueTokens(user.getId()));
+            }
+            case RESET_PASSWORD -> {
+                // Minted only now, against a code the caller has proved they hold. No session:
+                // the holder still has to set a password before anything logs them in.
+                String token = generateResetToken();
+                redis.opsForValue()
+                        .set(AppConstants.KEY_RESET + token, user.getId().toString(), RESET_TTL);
+                yield VerifyOtpResponse.resetAllowed(token, Instant.now().plus(RESET_TTL));
+            }
+        };
+    }
+
+    /**
+     * Same rule as {@link #verifyOtp}: the purpose is derived from account state, never taken
+     * from the caller. A REGISTER code for an already-active account would let anyone who can
+     * read the mailbox mint a session with no password at all, which is what RESET_PASSWORD
+     * exists to avoid (OWASP A07).
+     */
+    @Override
+    @Transactional
+    public void resendOtp(ResendOtpRequest request) {
+        // Every path out of here returns 200 with the same body — unknown address, suspended,
+        // cooldown — so the endpoint cannot be used to enumerate accounts (OWASP A07).
+        userRepository
+                .findByEmailIgnoreCase(request.email())
+                .flatMap(user -> purposeFor(user).map(purpose -> Map.entry(user, purpose)))
+                .ifPresent(
+                        entry -> {
+                            User user = entry.getKey();
+                            OtpPurpose purpose = entry.getValue();
+                            if (otpService.issue(user.getId(), user.getEmail(), purpose)) {
+                                log.info("{} OTP resent for user {}", purpose, user.getId());
+                            }
+                        });
+    }
+
+    /**
+     * The one rule that binds account state to OTP purpose. Every issuer (register, forgot-password,
+     * resend) and the verifier go through it, so the code that was sent is always the code that
+     * is checked.
+     */
+    private static Optional<OtpPurpose> purposeFor(User user) {
+        return switch (user.getStatus()) {
+            case PENDING_VERIFICATION -> Optional.of(OtpPurpose.REGISTER);
+            case ACTIVE -> Optional.of(OtpPurpose.RESET_PASSWORD);
+            case SUSPENDED -> Optional.empty();
+        };
     }
 
     @Override
@@ -154,17 +215,21 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public void forgotPassword(ForgotPasswordRequest request) {
-        Optional<User> maybeUser = userRepository.findByEmailIgnoreCase(request.email());
         // Always succeeds from the caller's point of view; a differing response would disclose
-        // which addresses are registered (OWASP A07).
-        maybeUser.ifPresent(
-                user -> {
-                    String token = generateResetToken();
-                    redis.opsForValue()
-                            .set(AppConstants.KEY_RESET + token, user.getId().toString(), RESET_TTL);
-                    otpService.issue(user.getId(), user.getEmail(), OtpPurpose.RESET_PASSWORD);
-                    log.info("Password reset requested for user {}", user.getId());
-                });
+        // which addresses are registered (OWASP A07). Only an ACTIVE account receives a code —
+        // the same rule verifyOtp reads the purpose back by, so a pending account cannot be
+        // handed a RESET_PASSWORD code that verify would then look up as REGISTER.
+        userRepository
+                .findByEmailIgnoreCase(request.email())
+                .filter(user -> purposeFor(user).filter(OtpPurpose.RESET_PASSWORD::equals).isPresent())
+                .ifPresent(
+                        user -> {
+                            // Only the emailed code leaves the building here. The reset token is
+                            // minted in verifyOtp, against a code the caller has proved they hold —
+                            // issuing it now would create a live credential nobody receives.
+                            otpService.issue(user.getId(), user.getEmail(), OtpPurpose.RESET_PASSWORD);
+                            log.info("Password reset requested for user {}", user.getId());
+                        });
     }
 
     @Override

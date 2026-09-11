@@ -42,6 +42,39 @@ curl -s localhost:8080/api/v1/auth/verify-otp -H 'Content-Type: application/json
 
 Paste the `accessToken` into the green **Authorize** button in Swagger UI.
 
+## Sending real mail
+
+Registration and password-reset codes are printed to the log until an SMTP host
+is configured. To send them for real, set these in `.env` and rebuild:
+
+```properties
+SPRING_PROFILES_ACTIVE=dev,mail
+MAIL_HOST=smtp.gmail.com
+MAIL_PORT=587
+MAIL_USERNAME=you@gmail.com
+MAIL_PASSWORD=your-16-char-app-password
+MAIL_FROM=you@gmail.com
+```
+
+```bash
+docker compose up -d --build app
+docker compose logs app | grep "OTP mail"    # expect: Sent REGISTER OTP mail to …
+```
+
+The `mail` profile is the switch — it loads `application-mail.properties`, which
+maps `MAIL_*` onto `spring.mail.*` and stops codes appearing in the log. Leave it
+out of the profile list and nothing else here is read, which is the fresh-clone
+behaviour above. A profile is either absent or complete, so there is no way to
+end up with SMTP selected and nowhere to connect.
+
+Use these `MAIL_*` names, never the dotted `spring.mail.*` ones. Those work in a
+local `./mvnw spring-boot:run`, where `.env` is read as a properties file, but as
+container environment variables they switch the mail autoconfiguration on and
+then fail to bind — leaving a sender with no host, and every code dead-lettered.
+
+For Gmail the password must be a 16-character App Password with 2FA enabled on
+the account, not the account password.
+
 ## Sending it to someone else
 
 They need Docker and two files — `docker-compose.yml` and (only if they build it
@@ -178,7 +211,9 @@ excluded from the Docker build context.
 | `APP_IMAGE` | `blog-post-api:latest` | Set to `you/blog-post-api:tag` to push. |
 | `FILESYSTEM_DISK` | `local` | `r2` switches uploads to Cloudflare R2. |
 | `JWT_SECRET` | dev fallback | Must be 32+ bytes. Change before exposing. |
-| `SPRING_PROFILES_ACTIVE` | `dev` | `prod` requires real `MAIL_*` and R2 values. |
+| `SPRING_PROFILES_ACTIVE` | `dev` | Add `,mail` to send codes for real. `prod` requires real `MAIL_*` and R2 values. |
+| `MAIL_HOST` / `MAIL_PORT` | unset | SMTP host. Read only when `mail` is active. |
+| `MAIL_USERNAME` / `MAIL_PASSWORD` | unset | SMTP credentials. Gmail wants an App Password. |
 
 ## Troubleshooting
 

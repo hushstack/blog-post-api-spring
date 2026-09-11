@@ -19,7 +19,12 @@ public interface PostService {
 
     PostResponse get(UUID postId, UUID viewerId);
 
-    PostResponse update(UUID postId, UUID userId, UpdatePostRequest request);
+    /**
+     * Applies {@code request} and, when {@code newImages} is non-empty, appends them after the
+     * survivors of {@code request.removeImageIds()}. Owner only.
+     */
+    PostResponse update(
+            UUID postId, UUID userId, UpdatePostRequest request, List<MultipartFile> newImages);
 
     void delete(UUID postId, UUID userId);
 
