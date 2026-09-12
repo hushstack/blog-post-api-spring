@@ -1,0 +1,83 @@
+# Deployment-only additions on top of docker-compose.yml. Not tracked in git
+# (see .gitignore) — everything here is either this-server-specific or a
+# pass-through of secrets that already live in .env.
+#
+# This host already runs another project (wraithnote) behind a shared Caddy
+# instance that owns ports 80/443. Rather than run a second reverse proxy, the
+# app container joins Caddy's network so it can be reached as `app:8080` —
+# same pattern Caddy already uses for wraithnote's own `api:3000`.
+networks:
+  wraithnote_default:
+    external: true
+
+services:
+  app:
+    networks:
+      - default
+      - wraithnote_default
+    # This VPS is 1 CPU / 1.9GB RAM, shared with the wraithnote production
+    # stack (which already reserves ~1.05GB via its own mem_limits). A prior
+    # deploy attempt let RabbitMQ's healthcheck pile up unbounded Erlang VMs
+    # and drove load average to 21+, starving wraithnote. These caps bound
+    # the worst case so this stack can no longer monopolize the one core.
+    # MaxRAMPercentage=75 in the Dockerfile ENTRYPOINT sizes the JVM heap off
+    # this limit automatically.
+    mem_limit: 600m
+    cpus: 0.4
+    # The image's own HEALTHCHECK (3s timeout) is tight for this box under
+    # load; give it more room so a transient slow response doesn't flap the
+    # container to unhealthy and block dependents.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 8s
+      start_period: 120s
+      retries: 8
+    environment:
+      # Real SMTP is configured (see .env); stop printing OTP codes to logs.
+      APP_EMAIL_LOG_CODES: "false"
+
+      # /actuator/health was probing live Gmail SMTP connectivity on every
+      # check (MailHealthIndicator), taking 3-20+s and occasionally throwing
+      # "Broken pipe" under load — right at the Dockerfile healthcheck's 3s
+      # timeout, causing it to flap unhealthy. Liveness/readiness shouldn't
+      # depend on a third-party mail server being reachable.
+      MANAGEMENT_HEALTH_MAIL_ENABLED: "false"
+
+      # Behind Nginx: trust X-Forwarded-* so the app sees real client IPs
+      # instead of bucketing every caller under the proxy's rate limit.
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+
+      # Not read by docker-compose.yml's app.environment block by default, so
+      # spring.mail.* would otherwise be entirely absent from the container.
+      SPRING_MAIL_HOST: ${SPRING_MAIL_HOST}
+      SPRING_MAIL_PORT: ${SPRING_MAIL_PORT}
+      SPRING_MAIL_USERNAME: ${SPRING_MAIL_USERNAME}
+      SPRING_MAIL_PASSWORD: ${SPRING_MAIL_PASSWORD}
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH: "true"
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE: "true"
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_REQUIRED: "true"
+
+  postgres:
+    mem_limit: 200m
+    cpus: 0.15
+
+  redis:
+    mem_limit: 64m
+    cpus: 0.05
+
+  rabbitmq:
+    mem_limit: 450m
+    cpus: 0.35
+    # Each check spins up a full temporary Erlang VM to ping the running
+    # node. Under CPU contention that can take longer than the original 10s
+    # timeout; Docker then kills it, but the orphaned BEAM process didn't
+    # always die cleanly, and the next check started anyway 10s later — the
+    # pile-up that caused the earlier incident. Wider spacing gives each
+    # check room to actually finish before the next one is due.
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 20s
+      start_period: 60s
+      retries: 8
