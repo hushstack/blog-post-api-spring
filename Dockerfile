@@ -48,9 +48,20 @@ VOLUME ["/data/uploads"]
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=10 \
+# 120s start-period: Boot + Flyway + Hibernate validation on a 1-vCPU box takes
+# longer than 60s, and a container flagged unhealthy on every deploy hides the
+# one time it really is.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=120s --retries=10 \
     CMD curl -fsS http://localhost:8080/actuator/health || exit 1
 
-# MaxRAMPercentage rather than a fixed -Xmx: the JVM then sizes itself from the
-# container limit, whatever the host turns out to have.
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/app.jar"]
+# MaxRAMPercentage rather than a fixed -Xmx: the JVM sizes itself from the
+# container's cgroup limit (docker-compose.yml sets one), not from the host.
+# Serial GC because the container gets 1-2 vCPUs and under 1 GB: one collector
+# thread beats G1's background threads contending with Tomcat for the same
+# core. ExitOnOutOfMemoryError so `restart: unless-stopped` replaces a dead
+# JVM instead of leaving a limping one behind.
+ENTRYPOINT ["java", \
+    "-XX:MaxRAMPercentage=70", \
+    "-XX:+UseSerialGC", \
+    "-XX:+ExitOnOutOfMemoryError", \
+    "-jar", "/app/app.jar"]

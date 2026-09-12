@@ -36,9 +36,10 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     List<Post> findAllByIdIn(Collection<UUID> ids);
 
     /**
-     * Cursor page of the viewer's feed: own posts plus posts by the given authors, filtered to what
-     * the viewer may see. Visibility is enforced in the query itself, not after the fact, so a
-     * FRIENDS/PRIVATE post cannot leak through the feed (OWASP A01).
+     * Cursor page of the viewer's feed: every PUBLIC post, the viewer's own posts, and FRIENDS
+     * posts by the given authors. Visibility is enforced in the query itself, not after the fact,
+     * so a FRIENDS/PRIVATE post cannot leak through the feed (OWASP A01). A viewer with no friends
+     * therefore still gets a full feed of public posts rather than an empty page.
      *
      * <p>Split into first-page and subsequent-page variants rather than one query with an
      * "or :cursor is null" branch: Postgres cannot infer the type of a bare parameter compared only
@@ -47,10 +48,10 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     @Query(
             """
             select p from Post p
-            where p.authorId = :viewerId
-               or (p.authorId in :friendIds and p.visibility in
-                   (com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility.PUBLIC,
-                    com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility.FRIENDS))
+            where p.visibility = com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility.PUBLIC
+               or p.authorId = :viewerId
+               or (p.authorId in :friendIds
+                   and p.visibility = com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility.FRIENDS)
             order by p.createdAt desc
             """)
     List<Post> findFeedFirstPage(
@@ -61,10 +62,10 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     @Query(
             """
             select p from Post p
-            where (p.authorId = :viewerId
-                   or (p.authorId in :friendIds and p.visibility in
-                       (com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility.PUBLIC,
-                        com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility.FRIENDS)))
+            where (p.visibility = com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility.PUBLIC
+                   or p.authorId = :viewerId
+                   or (p.authorId in :friendIds
+                       and p.visibility = com.cachewraith.blog_post_api_spring.modules.post.entity.Visibility.FRIENDS))
               and p.createdAt < :cursor
             order by p.createdAt desc
             """)
