@@ -3,6 +3,8 @@ package com.cachewraith.blog_post_api_spring.security.ratelimit;
 import com.cachewraith.blog_post_api_spring.common.constant.AppConstants;
 import java.time.Duration;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -16,6 +18,7 @@ import org.springframework.stereotype.Service;
  * goal is to make brute force impractical, not to meter billing, and a sliding-window log would
  * cost a sorted set per caller for a precision nothing needs.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class RateLimitService {
@@ -30,14 +33,22 @@ public class RateLimitService {
      */
     public boolean tryConsume(String bucket, int limit, Duration window) {
         String key = AppConstants.KEY_RATE_LIMIT + bucket;
-        Long count = redis.opsForValue().increment(key);
-        if (count == null) {
-            // Redis is unreachable. Fail open rather than locking every user out of login, and let
-            // the connection error surface in the logs (OWASP A10).
+        Long count;
+        try {
+            count = redis.opsForValue().increment(key);
+            if (count != null && count == 1L) {
+                redis.expire(key, window);
+            }
+        } catch (DataAccessException ex) {
+            // Redis is unreachable or timed out. Fail open rather than locking every user out of
+            // login (OWASP A10). Lettuce reports this by throwing, never by returning null, so the
+            // catch is what makes the fail-open real. The exception class only: the key carries a
+            // user id or an IP (OWASP A09).
+            log.warn("Rate limit check skipped, Redis unavailable: {}", ex.getClass().getSimpleName());
             return true;
         }
-        if (count == 1L) {
-            redis.expire(key, window);
+        if (count == null) {
+            return true;
         }
         return count <= limit;
     }

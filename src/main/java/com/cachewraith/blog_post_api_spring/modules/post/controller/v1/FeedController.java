@@ -26,7 +26,7 @@ public class FeedController {
     private final PostService postService;
 
     @GetMapping
-    @Operation(summary = "Cursor-paginated feed of your own and friends' posts")
+    @Operation(summary = "Cursor-paginated feed: every public post, your own, and friends' posts")
     public ApiResponse<CursorPageResponse<PostResponse>> feed(
             @CurrentUser AppUserPrincipal principal,
             @RequestParam(required = false) String cursor,

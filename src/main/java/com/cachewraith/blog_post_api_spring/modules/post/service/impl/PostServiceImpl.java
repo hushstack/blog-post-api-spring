@@ -223,7 +223,8 @@ public class PostServiceImpl implements PostService {
         int limit = Math.min(Math.max(size, 1), MAX_FEED_SIZE);
 
         List<UUID> friendIds = friendshipService.friendIds(viewerId);
-        // 'in ()' is invalid SQL, so an empty friend list needs a placeholder that matches nothing.
+        // 'in ()' is invalid SQL, so an empty friend list needs a placeholder that matches nothing;
+        // the PUBLIC branch of the query still fills the page for a viewer with no friends.
         Collection<UUID> effectiveFriends =
                 friendIds.isEmpty() ? List.of(new UUID(0, 0)) : friendIds;
 

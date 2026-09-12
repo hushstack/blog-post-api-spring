@@ -7,10 +7,32 @@
 # without ever being baked into the image.
 name: blog-post-api
 
+# Every service gets the same bounded log. Docker's json-file driver keeps
+# growing otherwise, and a full disk on a small VPS stalls Postgres and the
+# app together in a way that reads like a slow query.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Memory limits are the difference between this stack fitting a 2 GB box and
+# swapping on it. Without a cgroup limit every runtime plans for the WHOLE
+# host: the JVM sizes its heap from host RAM (MaxRAMPercentage is a share of
+# the container limit only when one exists), RabbitMQ's Erlang VM sets its
+# watermark at 40% of host RAM, Postgres reserves its buffers on top. The four
+# defaults below sum to ~1.6 GB, leaving room for the kernel and page cache on
+# 2 GB. A 1 GB box cannot hold all four; the management-plugin RabbitMQ image
+# is the first thing to trade down.
 services:
   postgres:
     image: postgres:18-alpine
     restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEM:-320M}
     ports:
       - "127.0.0.1:5433:5432"
     environment:
@@ -33,6 +55,13 @@ services:
   redis:
     image: redis:8-alpine
     restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          # Redis 8 loads the search/JSON/timeseries/bloom modules by default,
+          # which is ~80 MB idle before a single key is written.
+          memory: ${REDIS_MEM:-160M}
     volumes:
       - redis-data:/data
     healthcheck:
@@ -44,6 +73,13 @@ services:
   rabbitmq:
     image: rabbitmq:4-management-alpine
     restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          # RabbitMQ reads the cgroup limit for its own high-watermark, so this
+          # one number sizes both the container and the broker.
+          memory: ${RABBITMQ_MEM:-384M}
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-guest}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
@@ -70,6 +106,12 @@ services:
     # with APP_IMAGE to point at your registry account.
     image: ${APP_IMAGE:-blog-post-api:latest}
     restart: unless-stopped
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          # 70% of this becomes the heap (see the Dockerfile ENTRYPOINT).
+          memory: ${APP_MEM:-768M}
     ports:
       # Left side is the host port. "8080:8080" binds every interface, which is
       # what lets another machine on the network reach it; see README-DOCKER.md.
@@ -83,6 +125,11 @@ services:
       # start without them. dev also prints OTP codes when no SMTP is set, which
       # is the only way to complete a registration on a machine with no mailbox.
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+
+      # The dev profile prints every SQL statement. Off by default in a
+      # container: an environment variable beats the profile file, and a
+      # statement per query into the log driver is measurable on a small box.
+      SPRING_JPA_SHOW_SQL: ${SPRING_JPA_SHOW_SQL:-false}
 
       # Service names, not localhost: inside the compose network each service is
       # reachable by the name it is declared under.
